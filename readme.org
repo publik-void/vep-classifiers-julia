@@ -1,5 +1,6 @@
 * ~vep-classifiers-julia~: Julia-based machine learning models for VEP classification
 
+** To-do items for this readme file
 - TODO: Mention that this is a slightly rewritten subset of ~classifiers-0~
 - TODO: Mention that this currently contains classifiers for CCVEPs only
 - TODO: Provide an overview of the project structure
@@ -7,3 +8,6 @@
 - TODO: Recommend calling `populate_fft_plan_cache` and provide an example
 - TODO: Mention PyJulia and the conda environment example file
 - TODO: Mention row- and column-major order of matrices in Python vs. Julia
+
+** To-do list for the repository beyond this readme file
+- TODO: Make sure manifests exist for all Julia projects
