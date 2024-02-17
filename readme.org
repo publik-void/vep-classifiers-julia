@@ -5,9 +5,15 @@
 - TODO: Mention that this currently contains classifiers for CCVEPs only
 - TODO: Provide an overview of the project structure
 - TODO: Provide instructions on how to load the packages with Julia
-- TODO: Recommend calling `populate_fft_plan_cache` and provide an example
+- TODO: Recommend calling ~populate_fft_plan_cache~ and provide an example
 - TODO: Mention PyJulia and the conda environment example file
 - TODO: Mention row- and column-major order of matrices in Python vs. Julia
 
 ** To-do list for the repository beyond this readme file
 - TODO: Make sure manifests exist for all Julia projects
+- TODO: In ~classifiers-0~, parallelization was only employed at the level of
+  cross-validation, hyperparameter search, and evaluating multiple distinct
+  datasets at once. As the model is now meant to be used in online BCI contexts
+  where a single classifier has to be trained swiftly on a single take set,
+  parallelization at a lower level (either the regression algorithm or the
+  matrix multiplications) would be prudent.
