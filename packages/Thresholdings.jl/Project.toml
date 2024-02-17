@@ -1,0 +1,7 @@
+name = "Thresholdings"
+uuid = "40b5e861-406b-4919-bbb5-7ee23e635c42"
+version = "0.0.1"
+
+[deps]
+DataProcessors = "f8caa8ff-213c-4aa4-b150-ce79372b6696"
+Optim = "429524aa-4258-5aef-a3af-852621145aeb"
