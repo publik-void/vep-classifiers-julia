@@ -17,10 +17,10 @@ export
   apply!,
   is_id
 
-"Abstract supertype for feature standardization specification types"
+"Abstract supertype for feature standardization parameters"
 abstract type Standardization <: DataProcessor end
 
-"Standardizes features through affine transformation."
+"Holds parameters to standardize features through affine transformation."
 struct AffStd{M<:Union{Nothing, <:AbstractMatrix{<:Number}},
               S<:Union{Nothing, <:AbstractMatrix{<:Number}}} <: Standardization
   m::M
@@ -169,21 +169,33 @@ end
 end
 
 # TODO: Confirm that `fit` runs efficiently on `WindowMatrix`.
+"""
+    fit(::Type{AffStd}, a, mode = :identity; exclude = nothing)
+
+Create affine standardization parameters fitted to the matrix `a` and return
+them as an object of type `AffStd`.
+
+Supported `mode`s:
+* `:identity`: No transformation.
+* `:μ_absgeom`: Centers to the mean and scales to unity geometric mean of \
+  absolute value.
+* `:μ_σ`: Centers to the mean and scales to unity variance.
+
+If `exclude` is not `nothing`, it is interpreted as an index (as accepted by \
+  `setindex!`, e.g. a `Vector{Int}`) of columns to exclude from standardization.
+"""
 function DataProcessors.fit(::Type{AffStd}, a::AbstractMatrix{<:Number},
     mode::Symbol = :identity;
     exclude::Union{Nothing, <:AbstractVector{<:Integer}} = nothing)
   m, s = nothing, nothing
-  # Leaves data as is.
   if mode == :identity
     # Nothing to be done
 
-  # Centers to the mean and scales to unity geometric mean of absolute value.
   elseif mode == :μ_absgeom
     m = mean(a; dims = 1)
     t = typeof(abs(a[1]))(1e-18)
     s = exp.(mean(log.(max.(abs.(a .- m), t)); dims = 1)) # TODO: Efficiency
 
-  # Centers to the mean and scales to unity variance.
   elseif mode == :μ_σ
     m = mean(a; dims = 1)
     s = std(a; dims = 1, mean = m)
