@@ -59,7 +59,8 @@ _mul_prepare(a::BiasMatrix{<:Number}) =
   BiasArray(_mul_prepare(a.parent); materialized = false)
 
 """
-    ab(model::FwSLT, signal, label_markers, sampling_rate; kw...)
+    ab(model::FwSLT, signal, label_markers, sampling_rate, sentinel = nothing; \
+      kw...)
 
 Creates a feature matrix `a` of sliding windows and a corresponding label vector
 `b` from the input `signal` and input `label_markers`. Returns `(a, b)`.
@@ -74,14 +75,14 @@ set to `false`.
 
 The `sampling_rate` of the signal is measured in Hz (time points per second).
 
-Further keyword arguments `kw...` are passed on to `VepModels.window_signal`.
+Keyword arguments `kw...` are passed on to `VepModels.window_signal`.
 """
 function VepModels.ab(model::FwSLT, signal::AbstractMatrix{<:Number},
-    label_markers, sampling_rate::Real; sentinel = nothing, kw...)
+    label_markers, sampling_rate::Real, sentinel = nothing; kw...)
   window_size = Int(round(model.window_size * sampling_rate))
   signal_offset = Int(round(model.signal_offset * sampling_rate))
 
-  is = label_markers_to_window_indexes(label_markers; sentinel)
+  is = label_markers_to_window_indexes(label_markers, sentinel)
   b = [label_markers[i] for i in is]
   a = window_signal(signal, is, window_size, signal_offset; kw...)
 

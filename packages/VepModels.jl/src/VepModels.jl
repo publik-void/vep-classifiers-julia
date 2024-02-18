@@ -6,6 +6,7 @@ using Util: struct_equality
 using DataProcessors: DataProcessor, fit, apply
 using WindowArrays: WindowMatrix, compact!
 using Random: randperm
+import WindowArrays
 
 export
   VepModel,
@@ -13,8 +14,10 @@ export
   fit,
   apply,
   cv_splits,
-  window_signal,
-  label_markers_to_window_indexes
+  align_with_tick,
+  find_ticks,
+  label_markers_to_window_indexes,
+  window_signal
 
 "Supertype for hyperparameters for turning the input signals and labels into a
 matrix of sliding windows and a label vector (`ab`), training (`fit`) and
@@ -52,6 +55,80 @@ function cv_splits(n::Integer; folds::Integer = 6, splitting::Symbol = :shuffle)
     error("`cv_splits`: unrecognized `splitting = :$(splitting)`.")
   end
   return splits, deperm
+end
+
+"""
+    align_with_tick(index, ticks, tie_to_left = true)
+
+Aligns the `index` with the nearest value change in `ticks`.
+"""
+function align_with_tick(index::Integer, ticks::AbstractVector{<:Any},
+    tie_to_left::Bool = true)
+  i0 = findprev(s -> s ≠ ticks[index], ticks, index)
+  i1 = findnext(s -> s ≠ ticks[index], ticks, index)
+  if isnothing(i0)
+    i0 = 0
+  end
+  if isnothing(i1)
+    i1 = length(ticks)
+  end
+  i0 += 1
+  return (tie_to_left ? (≤) : (<))(index - i0, i1 - index) ? i0 : i1
+end
+
+"""
+find_ticks(ticks, from = 1, to = length(ticks))
+
+Returns a vector of indexes in the range `from:to` where the value of `ticks` is
+different from the previous value.
+"""
+function find_ticks(ticks::AbstractVector,
+    from::Int = 1, to::Int = length(ticks))
+  n = 0
+  last = ticks[end]
+  for (i, x) in enumerate(view(ticks, Base.OneTo(to)))
+    if x ≠ last && from ≤ i
+      n += 1
+    end
+    last = x
+  end
+  is = Vector{Int}(undef, n)
+  n = 0
+  last = ticks[end]
+  for (i, x) in enumerate(view(ticks, Base.OneTo(to)))
+    if x ≠ last && from ≤ i
+      n += 1
+      is[n] = i
+    end
+    last = x
+  end
+  return is
+end
+
+"""
+    label_markers_to_window_indexes(label_markers, sentinel = nothing)
+
+Extracts a vector of indexes from `label_markers` where the label value is not
+equal to `sentinel`. Preserves ordering of `keys(label_markers)`.
+
+`label_markers` can be any object that supports the `keys`, `values`, and
+`valtype` methods. The keys should be of type `T where {T <: Integer}`. The
+values should be of type `T where {T <: Union{typeof(sentinel), Number}}`. A
+value that is unequal to `sentinel` indicates that a window should be placed
+around the time point (array index between ``1`` and ``n``) indicated by the
+key.
+
+`label_markers` could e.g. be a `Dict{Int, LabelType}` (sparse representation)
+or a `Vector{Union{typeof(sentinel), LabelType}}` (dense representation where
+any time point without an associated label is designated by `sentinel`).
+"""
+function label_markers_to_window_indexes(label_markers, sentinel = nothing)
+  if isnothing(sentinel) && !(Nothing <: valtype(label_markers))
+    ks = keys(label_markers)
+    return ks isa AbstractVector ? ks : collect(ks)
+  end
+  return [k for (k, v) in zip(keys(label_markers), values(label_markers))
+    if v ≠ sentinel]
 end
 
 """
@@ -110,27 +187,6 @@ function window_signal(signal::AbstractMatrix, is::AbstractVector{<:Integer},
   else
     return a
   end
-end
-
-"""
-    label_markers_to_window_indexes(label_markers; sentinel = nothing)
-
-Extracts a vector of indexes from `label_markers` where the label value is not
-equal to `sentinel`. Preserves ordering of `keys(label_markers)`.
-
-`label_markers` can be any object that supports the `keys` and `values` methods.
-The keys should be of type `T where {T <: Integer}`. The values should be of
-type `T where {T <: Union{typeof(sentinel), Number}}`. A value that is unequal
-to `sentinel` indicates that a window should be placed around the time point
-(array index between ``1`` and ``n``) indicated by the key.
-
-`label_markers` could e.g. be a `Dict{Int, LabelType}` (sparse representation)
-or a `Vector{Union{typeof(sentinel), LabelType}}` (dense representation where
-any time point without an associated label is designated by `sentinel`).
-"""
-function label_markers_to_window_indexes(label_markers; sentinel = nothing)
-  return [k for (k, v) in zip(keys(label_markers), values(label_markers))
-    if v ≠ sentinel]
 end
 
 end

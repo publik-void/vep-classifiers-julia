@@ -96,3 +96,34 @@ fw = FwSLT(
   BitVector((false, true)),
   [.0],
   (atol = 1e-6, btol = 1e-6))
+
+# To construct a feature matrix (`a`) and a label vector (`b`) from our input
+# data, we will use the `ab` method for the `FwSLT` type. This method takes,
+# among its other arguments, an object `label_markers` that indicates the time
+# points in the signal where windows should be placed, and what label to
+# associate with each of these time points. `label_markers` can assume many
+# types – more info in the docs. Here, we will use a
+# `Dictionaries.ArrayDictionary`, as it is well-suited for this case. We will
+# also make use of the `VepModels.find_ticks` function to gather from the clock
+# signal and into a vector the indexes of all time points where a new frame has
+# started.
+using Dictionaries
+ticks = find_ticks(clock)
+label_markers = ArrayDictionary(ticks, stimulus_lightness_labels)
+
+# Each key in `label_markers` now represents the onset of a new frame and has
+# the lightness of that frame associated with it as a label. Note that the
+# labels don't necessarily have to be continuous lightness values. We could e.g.
+# have made a separate trigger bit which only indicates whether a frame should
+# be counted as black or white. We could then have mapped that to two discrete
+# label values like e.g. `Int8(-1)` and `Int8(1)`. The classifier should still
+# perform fine in that case.
+
+# We can now create our feature matrix and label vector. The `ab` function takes
+# as arguments the model hyperparameters, the EEG signal, the label markers,
+# and the sampling rate. There are further optional arguments which provide
+# opportunities for optimization in special cases – see the docs.
+a, b = ab(fw, eeg, label_markers, samples_per_second)
+
+# TODO: Continue by mentioning the `WindowMatrix` type, `mul_prepare`, FFT plan
+# precomputation, and the warnings.
