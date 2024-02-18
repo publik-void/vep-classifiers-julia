@@ -1,0 +1,9 @@
+name = "VepModels"
+uuid = "d3e7c650-a833-4705-b485-28fc963dc686"
+version = "0.0.1"
+
+[deps]
+DataProcessors = "f8caa8ff-213c-4aa4-b150-ce79372b6696"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+Util = "c2fb4f86-9f4c-4474-b022-dbdd1edc434a"
+WindowArrays = "1d8a2e5d-deda-4d09-b1ee-690d1f550d6f"
