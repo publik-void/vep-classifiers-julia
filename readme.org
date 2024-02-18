@@ -6,6 +6,7 @@
 - TODO: Provide an overview of the project structure
 - TODO: Provide instructions on how to load the packages with Julia
 - TODO: Recommend calling ~populate_fft_plan_cache~ and provide an example
+- TODO: In fact, provide a full example of training and testing a dataset
 - TODO: Mention PyJulia and the conda environment example file
 - TODO: Mention row- and column-major order of matrices in Python vs. Julia
 
