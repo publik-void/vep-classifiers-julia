@@ -12,6 +12,7 @@ import VepModels
 export
   FwSLT,
   ab,
+  threshold_b,
   fit,
   apply
 
@@ -94,15 +95,32 @@ function VepModels.ab(model::FwSLT, signal::AbstractMatrix{<:Number},
 end
 
 """
-    fit(model::FwSLT, a, b; allow_overwrite_a = true)
+    threshold_b(model, b)
+
+Applies thresholding to the potentially continuous label vector `b` (as returned
+by `ab`) using `model.label_thresholds`. The result is a thresholded label
+vector that can be compared to a model prediction.
+"""
+function threshold_b(model::FwSLT, b::AbstractVector{<:Number})
+  return apply(model.thresholding(model.label_thresholds...), b, model.classes)
+end
+
+"""
+    fit(model::FwSLT, a, b, b_thresholded = threshold_b(model, b); \
+      allow_overwrite_a = true)
 
 Trains the `model` on the feature matrix `a` with label vector `b` and returns
 the resulting fit `(; std, x, t)`.
 
+If a thresholded version of `b` has already been computed, it can be passed as
+`b_thresholded`.
+
 Pass `allow_overwrite_a = false` if the data of `a` should remain unmodified.
 """
 function VepModels.fit(model::FwSLT, a::AbstractMatrix{<:Number},
-    b::AbstractVector{<:Number}; allow_overwrite_a::Bool = true)
+    b::AbstractVector{<:Number},
+    b_thresholded::AbstractVector = threshold_b(model, b);
+    allow_overwrite_a::Bool = true)
   a = _mul_prepare(a)
 
   std = fit(AffStd, a, model.std_mode == () ? :identity : model.std_mode)
@@ -116,8 +134,6 @@ function VepModels.fit(model::FwSLT, a::AbstractMatrix{<:Number},
   # printstyled("LSMR took $(toc-tic)s for $(typeof(a)) of size $(size(a))";
   #   color = 12); println("")
 
-  b_thresholded = apply(model.thresholding(model.label_thresholds...), b,
-    model.classes)
   t = fit(model.thresholding, a * x, b_thresholded, model.classes)
   return (; std, x, t)
 end
@@ -131,7 +147,7 @@ returns the prediction vector.
 Pass `allow_overwrite_a = false` if the data of `a` should remain unmodified.
 """
 function VepModels.apply(model::FwSLT, a::AbstractMatrix{<:Number},
-    fit::NamedTuple{(:std, :x, :t), Tuple{AffStd, AbstractVector{<:Number},
+    fit::NamedTuple{(:std, :x, :t), <:Tuple{AffStd, AbstractVector{<:Number},
       Thresholding}};
     allow_overwrite_a::Bool = true)
   a = _mul_prepare(a)

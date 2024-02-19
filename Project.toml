@@ -1,6 +1,7 @@
 [deps]
 DataProcessors = "f8caa8ff-213c-4aa4-b150-ce79372b6696"
 Dictionaries = "85a47980-9c8c-11e8-2b9f-f7ca1fa99fb4"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 Standardizations = "5db0b911-c06e-46a6-8bfe-fd9190495816"
 Thresholdings = "40b5e861-406b-4919-bbb5-7ee23e635c42"
 Util = "c2fb4f86-9f4c-4474-b022-dbdd1edc434a"
