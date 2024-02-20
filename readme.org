@@ -18,3 +18,6 @@
   where a single classifier has to be trained swiftly on a single take set,
   parallelization at a lower level (either the regression algorithm or the
   matrix multiplications) would be prudent.
+- TODO: In case I implement a parallel matrix multiplication, I will be able to
+  do the summation in a better way. Change the remarks in `tutorial.jl`
+  accordingly.
