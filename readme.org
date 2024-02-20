@@ -9,6 +9,7 @@
 - TODO: In fact, provide a full example of training and testing a dataset
 - TODO: Mention PyJulia and the conda environment example file
 - TODO: Mention row- and column-major order of matrices in Python vs. Julia
+- TODO: Mention the complex-valued frame-wise classifier I tested in the past.
 
 ** To-do list for the repository beyond this readme file
 - TODO: Make sure manifests exist for all Julia projects
