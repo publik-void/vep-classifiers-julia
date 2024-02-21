@@ -959,6 +959,10 @@ end
 #   return r
 # end
 
+"Non-modifying catch-all method for `materialize` (so that it can be called on
+array types that are already materialized)."
+materialize(a::AbstractArray) = a
+
 # TODO: Should I change the name of `materialize` to `Base.collect`? Does
 # `collect` already call `copyto!` by itself?
 "Converts an `AbstractWindowArray` into a dense `Array`."

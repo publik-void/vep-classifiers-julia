@@ -10,9 +10,6 @@ export
   # sin2pi,
   # cos2pi,
   # lerp,
-  # shift_range,
-  # pad_range,
-  # find_true_ranges,
   # delta,
   struct_equality
 
@@ -40,27 +37,6 @@ export
 #   return lerp(y0, y1, (x .- x0) ./ (x1 .- x0))
 # end
 
-# function shift_range(range::UnitRange{<:Number}, left::Number, right::Number)
-#   (range.start+left):(range.stop+right)
-# end
-
-# function shift_range(range::UnitRange{<:Number}, shift::Number)
-#   shift_range(range, shift, shift)
-# end
-
-# function pad_range(range::UnitRange{<:Number}, left::Number, right::Number)
-#   (range.start-left):(range.stop+right)
-# end
-
-# function pad_range(range::UnitRange{<:Number}, padding::Number)
-#   pad_range(range, padding, padding)
-# end
-
-# function find_true_ranges(ys::AbstractVector{Bool})
-#   delimiters = ys - circshift(ys, 1)
-#   map(:, findall(delimiters .== 1), findall(delimiters .== -1) .- 1)
-# end
-
 # function delta(v::AbstractVector{T};
 #     cyclic = false, inv = false, shift = false) where {T<:Number}
 #   n = length(v) - 1
@@ -75,8 +51,13 @@ export
 #   return ds
 # end
 
-function struct_equality(x::T, y::T) where {T}
-  return all([getfield(x, fn) == getfield(y, fn) for fn in fieldnames(T)])
+function struct_equality(x::T, y::T, comp = (==)) where {T}
+  if isstructtype(T)
+    # Don't recurse, rely on `comp` definition for field types
+    return all(comp(getfield(x, fn), getfield(y, fn)) for fn in fieldnames(T))
+  else
+    return comp(x, y)
+  end
 end
 
 end

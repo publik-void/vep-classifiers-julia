@@ -2,7 +2,7 @@
 
 julia_version = "1.9.0"
 manifest_format = "2.0"
-project_hash = "45afc665f4c77c7e2226e4f70f9feabd66c4024d"
+project_hash = "169d3ef616f7c11f10aaad51210eab166866ebde"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -634,6 +634,12 @@ uuid = "4ec0a83e-493e-50e2-b9ac-8f72acf5a8f5"
 [[deps.Util]]
 path = "../Util.jl"
 uuid = "c2fb4f86-9f4c-4474-b022-dbdd1edc434a"
+version = "0.0.1"
+
+[[deps.VepModelFwSLT]]
+deps = ["DataProcessors", "IterativeSolvers", "Standardizations", "Thresholdings", "Util", "VepModels", "WindowArrays"]
+path = "../VepModelFwSLT.jl"
+uuid = "297af446-e294-49cc-8ead-d0b581f45430"
 version = "0.0.1"
 
 [[deps.VepModels]]

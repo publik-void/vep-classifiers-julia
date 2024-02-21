@@ -1,12 +1,12 @@
-name = "VepModelFwSLT"
-uuid = "297af446-e294-49cc-8ead-d0b581f45430"
+name = "VepModelSwSLT"
+uuid = "b523c7ef-7867-4eaa-a15e-0fe881cb2452"
 version = "0.0.1"
 
 [deps]
 DataProcessors = "f8caa8ff-213c-4aa4-b150-ce79372b6696"
-IterativeSolvers = "42fd0dbc-a981-5370-80f2-aaf504508153"
 Standardizations = "5db0b911-c06e-46a6-8bfe-fd9190495816"
 Thresholdings = "40b5e861-406b-4919-bbb5-7ee23e635c42"
 Util = "c2fb4f86-9f4c-4474-b022-dbdd1edc434a"
+VepModelFwSLT = "297af446-e294-49cc-8ead-d0b581f45430"
 VepModels = "d3e7c650-a833-4705-b485-28fc963dc686"
 WindowArrays = "1d8a2e5d-deda-4d09-b1ee-690d1f550d6f"

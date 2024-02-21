@@ -18,9 +18,10 @@ export
 
 """
     FwSLT(window_size, signal_offset, λ, std_mode, bias, thresholding, \
-      classes, lsmr_kw)
+      classes; kw...)
+
 Frame-wise sliding window model consisting of an affine standardization, a ridge
-regression, and thresholding. Tries to make use of `WindowMatrix`.
+regression, and thresholding. Tries to make use of `WindowArrays`.
 
 # Arguments
 
@@ -36,20 +37,27 @@ regression, and thresholding. Tries to make use of `WindowMatrix`.
   thresholding class.
 * `label_thresholds`: An `AbstractVector` containing the thresholds to be used
   to convert training labels to thresholding classes.
-* `lsmr_kw`: Keyword arguments for the LSMR algorithm (e.g. stopping \
-  tolerances). See documentation for `IterativeSolvers.lsmr!`.
+* `kw...`: Keyword arguments for the LSMR algorithm (e.g. stopping tolerances).
+  See documentation for `IterativeSolvers.lsmr!`.
 """
-struct FwSLT <: VepModel
-  window_size::Real
-  signal_offset::Real
-  λ::Real
+struct FwSLT{WS <: Real, SO <: Real, Λ <: Real, T <: Thresholding,
+    C <: AbstractVector, LT <: AbstractVector{<:Number},
+    LK <: Base.ImmutableDict{Symbol, <:Any}} <: VepModel
+  window_size::WS
+  signal_offset::SO
+  λ::Λ
   std_mode::Symbol
   bias::Bool
-  thresholding::Type{<:Thresholding}
-  classes::AbstractVector
-  label_thresholds::AbstractVector{<:Number}
-  lsmr_kw
+  thresholding::Type{T}
+  classes::C
+  label_thresholds::LT
+  lsmr_kw::LK
 end
+
+FwSLT(window_size, signal_offset, λ, std_mode, bias,
+    thresholding, classes, label_thresholds; kw...) =
+  FwSLT(window_size, signal_offset, λ, std_mode, bias, thresholding, classes,
+    label_thresholds, Base.ImmutableDict(kw...))
 
 "A wrapper for `mul_prepare` that handles non-`WindowMatrix` matrices and prints
 a notification in case no FFT plan was precomputed."
@@ -61,7 +69,7 @@ _mul_prepare(a::BiasMatrix{<:Number}) =
 
 """
     ab(model::FwSLT, signal, label_markers, sampling_rate, sentinel = nothing; \
-      kw...)
+      materialized = false, kw...)
 
 Creates a feature matrix `a` of sliding windows and a corresponding label vector
 `b` from the input `signal` and input `label_markers`. Returns `(a, b)`.
@@ -76,21 +84,29 @@ set to `false`.
 
 The `sampling_rate` of the signal is measured in Hz (time points per second).
 
-Keyword arguments `kw...` are passed on to `VepModels.window_signal`.
+If `materialized` is `true`, no `WindowArrays.WindowMatrix` will be utilized.
+
+Further keyword arguments `kw...` are passed on to `VepModels.window_signal`.
 """
 function VepModels.ab(model::FwSLT, signal::AbstractMatrix{<:Number},
-    label_markers, sampling_rate::Real, sentinel = nothing; kw...)
+    label_markers, sampling_rate::Real, sentinel = nothing;
+    materialized = false, kw...)
   window_size = Int(round(model.window_size * sampling_rate))
   signal_offset = Int(round(model.signal_offset * sampling_rate))
+
+  if materialized; kw = merge(kw, pairs((compact = false, copy = false))); end
 
   is = label_markers_to_window_indexes(label_markers, sentinel)
   b = [label_markers[i] for i in is]
   a = window_signal(signal, is, window_size, signal_offset; kw...)
 
+  if materialized; a = materialize(a); end
+
+  # Don't materialize the `BiasArray` because `AffStd` won't handle it correctly
   if model.bias; a = BiasArray(a; materialized = false); end
 
-  @assert size(a, 1) == length(b) "`FwSLT`: `size(a, 1)` is $(size(a, 1)), " *
-    "but `length(b)` is $(length(b))"
+  size(a, 1) == length(b) ||
+    throw(DimensionMismatch("`ab`: `size(a, 1) ≠ `length(b)`"))
   return a, b
 end
 
@@ -120,14 +136,15 @@ Pass `allow_overwrite_a = false` if the data of `a` should remain unmodified.
 function VepModels.fit(model::FwSLT, a::AbstractMatrix{<:Number},
     b::AbstractVector{<:Number},
     b_thresholded::AbstractVector = threshold_b(model, b);
-    allow_overwrite_a::Bool = true)
+    allow_overwrite_a::Bool = true, init_scale = 2, init_offset = 0)
   a = _mul_prepare(a)
 
-  std = fit(AffStd, a, model.std_mode == () ? :identity : model.std_mode)
+  std = fit(AffStd, a, model.std_mode)
   apply_std_kw = allow_overwrite_a ? () : (; lazy = true)
   a = apply!(std, a; apply_std_kw...)
 
-  x = rand(eltype(a), size(a, 2)) .* 4 .- 2 .- (eltype(a) <: Complex ? 2im : 0)
+  x = rand(eltype(a), size(a, 2))
+  x .= (x .- 1//2) .* (2 * init_scale) .+ init_scale
   # tic = time()
   lsmr!(x, a, b; λ = model.λ, model.lsmr_kw...)
   # toc = time()

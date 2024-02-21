@@ -43,7 +43,7 @@ end
 
 "Wraps an `AbstractMatrix` with an `AffStd` applied to it lazily."
 struct AffStdMatrix{T<:Number,
-    A<:AbstractMatrix{T},
+    A<:AbstractMatrix{<:Number},
     SR<:Union{Nothing, <:AbstractArray{<:Number}},
     MSR<:Union{Nothing, <:AbstractArray{<:Number}}} <: AbstractMatrix{T}
   parent::A
@@ -51,22 +51,32 @@ struct AffStdMatrix{T<:Number,
   msr::MSR # `AffStd(…).m .* sr`
 end
 
-@inline function default_use_lazy(a::AbstractMatrix)
+@inline function default_use_lazy(std::AffStd, a::AbstractMatrix)
   a isa WindowMatrix && return true
+  !isnothing(std.s) && eltype(a) <: Integer && return true
   return false
 end
 
+AffStdMatrix{T}(a, sr, msr) where {T} =
+  AffStdMatrix{T, typeof(a), typeof(sr), typeof(msr)}(a, sr, msr)
+
+_inv(x::Integer) = true//x
+_inv(x) = inv(x)
+
 function AffStdMatrix(a::AbstractMatrix{<:Number}, std::AffStd;
-    materialized = !default_use_lazy(a))
+    materialized = !default_use_lazy(std, a))
   # TODO: Does this allocate more than necessary?
   # TODO: Perhaps canonicalize this to always create vectors (`vec` may prduce
   # something like a `reshape`), or would it be nicer not to do that?
-  materialized && return apply(a, std)
+  materialized && return apply(a, std; lazy = false)
   has_m, has_s = !isnothing(std.m), !isnothing(std.s)
-  sr = !has_s ? nothing : vec(inv.(transpose(std.s)))
+  sr = !has_s ? nothing : vec(_inv.(transpose(std.s)))
   msr = !has_m ?
     nothing : vec((!has_s ? transpose(std.m) : transpose(std.m) .* sr))
-  return AffStdMatrix(a, sr, msr)
+  T = eltype(a);
+  if has_m; T = promote_type(T, eltype(msr)); end
+  if has_s; T = promote_type(T, eltype(sr)); end
+  return AffStdMatrix{T}(a, sr, msr)
 end
 
 Base.size(a::AffStdMatrix) = size(a.parent)
@@ -136,12 +146,11 @@ end
 end
 
 @inline function DataProcessors.apply!(std::AffStd,
-    a::AbstractMatrix{<:Number}; lazy = default_use_lazy(a))
+    a::AbstractMatrix{<:Number}; lazy = default_use_lazy(std, a))
   has_m, has_s = !isnothing(std.m), !isnothing(std.s)
   !has_m && !has_s && return a
   lazy && return apply(std, a; lazy = true)
-  # Specialization for `WindowMatrix` auto-materializes when `!lazy`. Note:
-  # using `similar(a)` here is more efficient than calling `materialize(a)`.
+  # Specialization for `WindowMatrix` auto-materializes when `!lazy`.
   a isa WindowMatrix && return apply!(std, similar(a), a)
   return apply!(std, a, a)
 end
@@ -151,11 +160,11 @@ end
 # directly supported by `apply!(std, a.parent, a.parent)`.
 @inline function DataProcessors.apply!(std::AffStd,
     a::BiasMatrix{<:Number}; kwargs...)
-  return BiasArray(apply!(std, a.parent, kwargs...); materialized = false)
+  return BiasArray(apply!(std, a.parent; kwargs...); materialized = false)
 end
 
 @inline function DataProcessors.apply(std::AffStd,
-    a::AbstractMatrix{<:Number}; lazy = default_use_lazy(a))
+    a::AbstractMatrix{<:Number}; lazy = default_use_lazy(std, a))
   has_m, has_s = !isnothing(std.m), !isnothing(std.s)
   !has_m && !has_s && return a
   !lazy && return apply!(std, similar(a), a)
