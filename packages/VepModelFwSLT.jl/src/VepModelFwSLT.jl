@@ -1,3 +1,4 @@
+"Module providing the `FwSLT` model. See `VepModelFwSLT.FwSLT`."
 module VepModelFwSLT
 
 using WindowArrays: WindowMatrix, BiasMatrix, BiasArray, mul_prepare,

@@ -3,6 +3,13 @@
 # understood. It introduces the basic usage of the frame-wise and segment-wise
 # machine learning models.
 
+# If you have Julia running, make sure the directory this `tutorial.jl` file is
+# contained in has been activated as the current project. You can do this with
+# `] activate path/to/project`.
+
+# Also make sure that the project has been instantiated. This can be done with
+# `] instantiate`.
+
 import Random
 Random.seed!(0)
 

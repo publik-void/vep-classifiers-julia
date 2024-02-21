@@ -1,18 +1,86 @@
 * ~vep-classifiers-julia~: Julia-based machine learning models for VEP classification
 
-** To-do items for this readme file
-- TODO: Mention that this is a slightly rewritten subset of ~classifiers-0~
-- TODO: Mention that this currently contains classifiers for CCVEPs only
-- TODO: Provide an overview of the project structure
-- TODO: Provide instructions on how to load the packages with Julia
-- TODO: Recommend calling ~populate_fft_plan_cache~ and provide an example
-- TODO: In fact, provide a full example of training and testing a dataset
-- TODO: Mention PyJulia and the conda environment example file
-- TODO: Mention row- and column-major order of matrices in Python vs. Julia
-- TODO: Mention the complex-valued frame-wise classifier I tested in the past.
+This is a simplified, slightly rewritten, and better documented subset of my old
+[[https://es-git.cs.uni-tuebingen.de/niabsd/theses/non-recognizable-stimuli/classifiers-0][~classifiers-0~]]
+repository.
 
-** To-do list for the repository beyond this readme file
-- TODO: Make sure manifests exist for all Julia projects
+When referring to myself here, at the time of writing this, "I" means Lasse
+Schlör. I assume that if this repository will be modified in the future, if one
+really wants to know who "I" is at any location in the repository, ~git blame~
+can be used.
+
+Currently, the repository only contains code for two machine learning models: A
+least-squares-based "frame-wise" model that can be used to classify the
+lightness of a stimulus at any point in time from an EEG signal, and a
+least-squares based "segment-wise" model that can be used to further classify
+fixed-duration time series of such lightness predictions, or of EEG data
+directly.
+
+The main use case would be offline or online training, usage, and evaluation of
+CCVEP classifiers. However, the models could also be used e.g. for classifying
+SSVEPs.
+
+** Overview of the repository structure and usage
+
+A Julia project with its dependencies is defined by a ~Project.toml~ file in its
+root directory. Exact version pinning is provided by the ~Manifest.toml~ file.
+
+The code in this repository is split into several subprojects that can be found
+under the [[file:packages][~packages~]] directory. A description for each of
+these can be found in the form of the module docstring. To read the docstring,
+look at the top of the file in the ~src~ directory of a package or load the
+package in Julia and use the ~?~ REPL mode.
+
+The root directory of this repository is a Julia project too. It contains a
+[[file:tutorial.jl][tutorial]] to help you get started using the models. A Julia
+REPL to run the code from this tutorial can be started as follows:
+#+begin_src sh
+julia --threads=auto --project=.
+#+end_src
+
+The packages from this repository can be added to another Julia project with
+~] develop path/to/vep-classifiers-julia/packages/Package.jl/~. When using the
+models, don't forget to call ~populate_fft_plan_cache~ first (see the docstrings
+or the tutorial for more info).
+
+** Accessing the models from Python
+
+The Python package ~pyjulia~ can be used to run Julia code in Python. An
+[[file:pyjulia-conda-env-example.yml][example conda environment file]] is
+included in this repository and can be used as a starting point.
+
+Note that NumPy arrays, as opposed to Julia arrays, are in
+[[https://en.wikipedia.org/wiki/Row-_and_column-major_order][row-major order]]
+by default. I don't think this will present any major challenges, but it is
+something to be aware of in terms of performance considerations when a lot of
+work is to be done on the same matrix by both languages.
+
+Calling Python from Julia is possible as well with the `PyCall` and/or `Conda`
+packages.
+
+** Notes
+
+*** Complex-valued frame-wise classifier
+
+As we are often interested in the phase of a certain frequency when classifying
+VEPs for BCIs, it may be sensible to make use of analytical signals. As opposed
+to a real-valued signal, an analytical signal is its complex-valued counterpart
+that contains both the amplitude and the phase at every time point. It can be
+computed using the Hilbert transform. The models contained in this repository
+support working with complex-valued data.
+
+While working on my Master's thesis, I tested this in the folowing way: I
+filtered the EEG signal with a pretty sharp bandpass at 60Hz, so that not much
+other frequency content remained. I approximated a Hilbert filter by adding an
+imaginary component to the signal that was simply the real component filtered by
+an allpass filter that had been tuned to have a phase shift of 90° at 60Hz. I
+fed the resulting signal into the frame-wise model using a very small window
+size. The result was a model that was very fast and space-efficient, with a
+slight decrease in classification accuracy. In hindsight, I am not sure if the
+intense bandpass-filtering or the usage of an analytical signal made the real
+difference here, though.
+
+** To-do list
 - TODO: In ~classifiers-0~, parallelization was only employed at the level of
   cross-validation, hyperparameter search, and evaluating multiple distinct
   datasets at once. As the model is now meant to be used in online BCI contexts
@@ -20,5 +88,5 @@
   parallelization at a lower level (either the regression algorithm or the
   matrix multiplications) would be prudent.
 - TODO: In case I implement a parallel matrix multiplication, I will be able to
-  do the summation in a better way. Change the remarks in `tutorial.jl`
+  do the summation in a better way. Change the remarks in ~tutorial.jl~
   accordingly.

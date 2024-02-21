@@ -1,3 +1,4 @@
+"Module providing the `SwSLT` model. See `VepModelSwSLT.SwSLT`."
 module VepModelSwSLT
 
 using Thresholdings: Thresholding
@@ -16,8 +17,8 @@ export
     SwSLT(segment_length, λ, std_mode, bias, thresholding, classes, \
       label_thresholds = nothing; kw...)
 
-Segment-wise model for CCVEP segments of fixed length, consisting of an affine
-standardization, a ridge regression, and thresholding.
+Segment-wise model for stimulation pattern segments of fixed length, consisting
+of an affine standardization, a ridge regression, and thresholding.
 
 # Arguments
 
@@ -79,6 +80,9 @@ a copy of the label vector `b = labels`.
 
 `lightnesses` is a vector of length `length(labels) * model.segment_length` that
 contains the individual lightness values for one segment after another.
+`lightnesses` can also be a matrix, where instead of a single value, each row
+(representing a time point) can have multiple values (e.g. RGB values or EEG
+channels).
 
 `labels` is a vector of numerical segment labels, where the segments are in the
 same order as in `lightnesses`.
@@ -86,10 +90,11 @@ same order as in `lightnesses`.
 Keyword arguments `kw...` are passed on to `VepModelFwSLT`. Defaults are set to
 `materialized = true, compact = false`.
 """
-function VepModels.ab(model::SwSLT, lightnesses::AbstractVector{<:Number},
+function VepModels.ab(model::SwSLT, lightnesses::AbstractVecOrMat{<:Number},
     labels::AbstractVector{<:Number}; materialized = true, compact = false,
     kw...)
-  signal = transpose(reshape(lightnesses, (model.segment_length, :)))
+  signal = transpose(reshape(transpose(lightnesses),
+    (model.segment_length * size(lightnesses, 2), :)))
   size(signal, 1) == length(labels) || throw(DimensionMismatch(
     "`ab`: `length(lightnesses) ÷ model.segment_length ≠ length(labels).`"))
 
