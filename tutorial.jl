@@ -20,7 +20,7 @@ segment_labels = repeat(BitVector((false, true)), segments_per_trial ÷ 2)
 # so we can construct it easily by just concatenating a bunch of single segments
 # with fades on both sides. These would look something like this.
 segment_lightness_labels_normal_phase =
-  [.2, -.6, 1., -1., 1., -1., 1., -1., 1., -1., 1., -1., 1., -1., .6, -.2]
+  [-.2, .6, -1., 1., -1., 1., -1., 1., -1., 1., -1., 1., -1., 1., -.6, .2]
 segment_lightness_labels_inverted_phase =
   -segment_lightness_labels_normal_phase
 frames_per_segment = length(segment_lightness_labels_normal_phase)
@@ -102,16 +102,19 @@ using VepModels, VepModelFwSLT, Thresholdings
 
 # We can start by defining the hyperparameters for the model. See the
 # documentation of `FwSLT` for details.
+window_size = samples_per_segment / samples_per_second
+signal_offset = (vep_delay - .5 * samples_per_segment) / samples_per_second
 fw = FwSLT(
-  samples_per_segment / samples_per_second,
-  (vep_delay - .5 * samples_per_segment) / samples_per_second,
+  window_size,
+  signal_offset,
   1.,
   :μ_σ,
   false,
   Binary,
   BitVector((false, true)),
-  [.0],
-  (atol = 1e-6, btol = 1e-6))
+  [.0];
+  atol = 1e-6,
+  btol = 1e-6)
 
 # The `FwSLT` model implements the frame-wise sliding window classifier as
 # described in my Master's Thesis (and very similar to what Martin Spüler,
@@ -133,11 +136,14 @@ fw = FwSLT(
 # tolerance value of `1e-6` has usually resulted in a good trade-off between
 # accuracy of the solution and runtime for me. It is a bit unfortunate, but I
 # would not recommend using 32-bit floats for the EEG signal / feature matrix.
+# As of writing this, there is still an open to-do item in `WindowArrays.jl` to
+# remind me to find out why 32-bit floats result in bad accuracy. It may have to
+# do with some summations being implemented in a numerically unfavorable way.
 
-# To construct a feature matrix (`a`) and a label vector (`b`) from our input
-# data, we will use the `ab` method for the `FwSLT` type. This method takes,
-# among its other arguments, an object `label_markers` that indicates the time
-# points in the signal where windows should be placed, and what label to
+# To construct a feature matrix (`fw_a`) and a label vector (`fw_b`) from our
+# input data, we will use the `ab` method for the `FwSLT` type. This method
+# takes, among its other arguments, an object `label_markers` that indicates the
+# time points in the signal where windows should be placed, and what label to
 # associate with each of these time points. `label_markers` can assume many
 # types – more info in the docs. Here, we will use a
 # `Dictionaries.ArrayDictionary`, as it is well-suited for this case. We will
@@ -161,23 +167,24 @@ label_markers = ArrayDictionary(ticks, stimulus_lightness_labels)
 # as arguments the model hyperparameters, the EEG signal, the label markers,
 # and the sampling rate. There are further optional arguments which provide
 # opportunities for optimization in special cases – see the docs.
-a, b = ab(fw, eeg, label_markers, samples_per_second)
+fw_a, fw_b = ab(fw, eeg, label_markers, samples_per_second)
 
-# When evaluating `a`, we can see in the console output that its type is a
+# When evaluating `fw_a`, we can see in the console output that its type is a
 # `WindowArrays.WindowMatrix`. This is a custom matrix type that internally only
-# stores a vector of data (`a.v`), a vector of indexes into the data vector
-# (`a.i`), and the number of matrix columns (`a.k`). The matrix has one row for
-# every element in `a.i`, which is a view of length `a.k` into `a.v`.
+# stores a vector of data (`fw_a.v`), a vector of indexes into the data vector
+# (`fw_a.i`), and the number of matrix columns (`fw_a.k`). The matrix has one
+# row for every element in `fw_a.i`, which is a view of length `fw_a.k` into
+# `fw_a.v`.
 
 # The `ab` method flattens the `eeg` signal matrix into a vector such that each
 # channel is enumerated for the first time point, then each channel for the
-# second time point, and so on. This is why the number of columns of `a` is the
-# window size in samples multiplied by the number of channels. Each row is a
+# second time point, and so on. This is why the number of columns of `fw_a` is
+# the window size in samples multiplied by the number of channels. Each row is a
 # window into the flattened signal matrix where the first `m` values represent
 # the first time point included in the window, the following `m` values
 # represent the next time point, etc. To access only the channel `j` from a row
-# `i`, one would use something like `a[i, j : m : end]` or
-# `view(a, i, j : m : lastindex(a, 2))`.
+# `i`, one would use something like `fw_a[i, j : m : end]` or
+# `view(fw_a, i, j : m : lastindex(fw_a, 2))`.
 
 # In the case of overlapping windows, the `WindowMatrix` is more space-efficient
 # than a standard matrix that stores each of its elements individually (and
@@ -186,14 +193,14 @@ a, b = ab(fw, eeg, label_markers, samples_per_second)
 # fast matrix multiplication can be precomputed to be reused in all subsequent
 # multiplications. This is done with the `WindowArrays.mul_prepare` function.
 # The `WindowMatrix` object has two more fields in addition to those mentioned
-# above: `a.mp` and `a.mpa`, which hold the precomputed data for multiplications
-# of the form `a * x` and `a' * x`, respectively. Before calling `mul_prepare`,
-# those `a.mp` and `a.mpa` will both be `nothing`. We will not call
-# `mull_prepare` manualy here, because it will be done inside the `fit` method
-# that we will invoke further below, but the call would look something like
-# this:
+# above: `fw_a.mp` and `fw_a.mpa`, which hold the precomputed data for
+# multiplications of the form `fw_a * x` and `fw_a' * x`, respectively. Before
+# calling `mul_prepare`, those `fw_a.mp` and `fw_a.mpa` will both be `nothing`.
+# We will not call `mull_prepare` manualy here, because it will be done inside
+# the `fit` method that we will invoke further below, but the call would look
+# something like this:
 #using WindowArrays: mul_prepare
-#a = mul_prepare(a)
+#fw_a = mul_prepare(fw_a)
 
 # The FFT-based multiplication makes use of the FFTW library. The FFTW library
 # is designed in such a way that an FFT algorithm must first be planned before
@@ -224,15 +231,15 @@ populate_fft_plan_cache( # TODO
 
 ## Training the model
 
-# So we have our feature matrix `a` and our label vector `b`, and we have a
-# cache of ready-to-go FFT plans for fast matrix-vector multiplications. We can
-# now train the model with the `fit` method. `fit` takes the model
+# So we have our feature matrix `fw_a` and our label vector `fw_b`, and we have
+# a cache of ready-to-go FFT plans for fast matrix-vector multiplications. We
+# can now train the model with the `fit` method. `fit` takes the model
 # hyperparemeters, the feature matrix, and the label vector as arguments and
 # returns the fitted model data in the form of a named tuple. We will set the
-# keyword argument `allow_overwrite_a` to `false` so that `a` will not be
+# keyword argument `allow_overwrite_a` to `false` so that `fw_a` will not be
 # modified. Its default value `true` may result in a small speedup, but does not
-# guarantee that the data of `a` is preserved, as the name implies.
-fw_fit = fit(fw, a, b; allow_overwrite_a = false)
+# guarantee that the data of `fw_a` is preserved, as the name implies.
+fw_fit = fit(fw, fw_a, fw_b; allow_overwrite_a = false)
 
 # Notice that a couple of messages are printed during the evaluation of `fit`.
 # The reason for this is that the `mul_prepare` call inside of `fit` decides to
@@ -249,30 +256,163 @@ fw_fit = fit(fw, a, b; allow_overwrite_a = false)
 
 # The fitted model data can now be used together with the hyperparameters to
 # make predictions on a matrix of new features. As mentioned above, we will
-# simply use the same matrix `a` as our "new features", even though this is bad
-# practice.
-b_predicted = apply(fw, a, fw_fit; allow_overwrite_a = false)
+# simply use the same matrix `fw_a` as our "new features", even though this is
+# bad practice.
+fw_b_predicted = apply(fw, fw_a, fw_fit; allow_overwrite_a = false)
 
 # Note that the prediction is dicrete and uses the labels from `fw.classes`. If
-# we want to compare this prediction to something, we can not use `b`, because
-# it contains labels for continuous lightness estimates. We can apply a
-# thresholding to `b` using the threshold(s) in `fw.label_thresholds`:
-b_thresholded = threshold_b(fw, b)
+# we want to compare this prediction to something, we can not use `fw_b`,
+# because it contains labels for continuous lightness estimates. We can apply a
+# thresholding to `fw_b` using the threshold(s) in `fw.label_thresholds`:
+fw_b_thresholded = threshold_b(fw, fw_b)
 
 # This gives us a label vector that uses the same discrete labels as
-# `b_predicted`. Now we can do a fair evaluation. Let's compute the
+# `fw_b_predicted`. Now we can do a fair evaluation. Let's compute the
 # classification accuracy:
-fw_accuracy = count(b_predicted .== b_thresholded) / length(b)
+fw_accuracy = count(fw_b_predicted .== fw_b_thresholded) / length(fw_b)
 
 
 ### Using the segment-wise model
 
-# We are going to use the model `TODO` to train a segment-wise classifier on our
-# training dataset. We will then use the classifier to predict for each segment
-# of our testing dataset whether it had an inverted phase or not. Here, the
-# training and testing datasets will both be the same again (bad practice, just
-# as above). They will consist of our frame-wise prediction `b_predicted` and
-# the `segment_labels`.
+# We are going to use the model `SwSLT` to train a segment-wise classifier on
+# our training dataset. We will then use the classifier to predict for each
+# segment of our testing dataset whether it had an inverted phase or not. Here,
+# the training and testing datasets will both be the same again (bad practice,
+# just as above). They will consist of our frame-wise prediction
+# `fw_b_predicted` and the `segment_labels`.
 
-# TODO
+
+## Preparing the model inputs
+
+using VepModelSwSLT
+
+# Because the `SwSLT` model is so similar to the `FwSLT` model, it uses almost
+# the same set of hyperparameters. Instead of the window size and signal offset,
+# it takes the segment length as its first argument. Also, `label_thresholds` is
+# optional because it can be deduced from the `classes`, if they are numerical
+# (which they are in this case, because just like in Python, `Bool`s are
+# considered numbers equal to 0 or 1 in Julia). Something non-numerical like
+# strings could be used as classes too for these models, but it wouldn't really
+# add any value in this case. We will use a bias term in this case, because the
+# mean of our `segment_labels` is .5, i.e. nonzero. We could instead also have
+# used `-1` and `1` in the `segment_labels` definition.
+sw = SwSLT(
+  frames_per_segment,
+  1.,
+  :μ_σ,
+  true,
+  Binary,
+  BitVector((false, true));
+  atol = 1e-6,
+  btol = 1e-6)
+
+# The `ab` method for the `SwSLT` model takes a vector of lightness values and a
+# vector of segment labels as inputs. We already have our `segment_labels`, and
+# we will use our previous prediction `fw_b_predicted` as lightness values.
+
+# Of course, the latter have been thresholded to `false` and `true`.
+# Technically, the model also allows for the use of continuous lightness values,
+# but using the thresholded values tends to slightly improve the classification
+# accuracies.
+
+# In our case here, in `fw_b_predicted`, all frames are ordered chronologically,
+# because we never permuted the ordering. If we had done a cross-validation with
+# shuffling, we would need to reconstruct the correct ordering first (or order
+# `segment_labels` accordingly). The `VepModels.cv_splits` function can help
+# with this. This is fairly common functionality, however, that can also be
+# found in machine learning packages.
+
+# So let's create the feature matrix and label vector:
+sw_a, sw_b = ab(sw, fw_b_predicted, segment_labels)
+
+
+## Training the model
+
+# This should look familiar:
+sw_fit = fit(sw, sw_a, sw_b; allow_overwrite_a = false)
+
+
+## Using/testing the trained model
+
+# And this is also done the same way as for the frame-wise model:
+sw_b_predicted = apply(sw, sw_a, sw_fit; allow_overwrite_a = false)
+
+# We could compute a `sw_b_thresholded` analogously to above, but in this case,
+# it would just be exactly the same as `sw_b`. So we can just use that one in
+# the accuracy calculation:
+sw_accuracy = count(sw_b_predicted .== sw_b) / length(sw_b)
+
+
+### Maximum length sequence (m-sequence) shift classification
+
+# In my thesis, the bit string encoded by the segments in the stimuli was a
+# maximum length sequence (MLS). MLSs have been used in cVEP-based BCIs, because
+# their autocorrelation property can be used to present the same MLS with
+# multiple distinct time shifts (rotation offsets) and then classify the shift.
+# The same can be done with the segment-wise predictions here, if the segments'
+# bits are an MLS. Furthermore, Expanding the segments into the full vector of
+# lightness values mostly preserves the autocorrelation property, and hence, the
+# MLS shift classification can also be done on the frame-wise predictions
+# directly, which seems to lead to better classification accuracies.
+
+# At the time of writing this, this repository contains no code specifically for
+# MLS shift classification. However, this is fairly easy to do by hand. To
+# illustrate this here briefly, let's say our original 192-element bit string
+# `segment_labels` is really a concatenation of 64 stimuli of length 3, namely
+# 010, 101, 010, etc. These are MLSs of length 3. Let's define the following:
+
+mls0 = BitVector((false, false, true))
+mls1 = (!).(mls0)
+
+# So our first MLS with shift 0 (`mls0`) is now defined to be 001, and our
+# second MLS with shift 0 (`mls1`) is the inversion of the first, 110. A MLS
+# shift classifier as it is usually implemented can only distinguish between
+# different shifts. Mixing an MLS with its inverted version will confuse such a
+# classifier. So basically, we pretend here that we did an experiment where we
+# tested two distinct MLSs (`mls0` and `mls1`), and we presented 32 trials of
+# each, alternating between the two MLSs, and we always presented them with a
+# shift (to the right) of 2. I hope this makes sense. Ideally, the experiment
+# should also have presented the MLSs with shifts 0 and 1, in randomized order,
+# probably.
+
+# Let's extract the dataset of 32 trials for `mls0` into a matrix where each row
+# represents one trial, i.e. one MLS:
+sw_mlss_predicted = reshape(sw_b_predicted, (3, :))'
+sw_mls0s_predicted =
+  view(sw_mlss_predicted, 1 : 2 : lastindex(sw_mlss_predicted, 1), :)
+
+# We now want to cross-correlate each row with `mls0` and find the maximum. In
+# other words, we will correlate each row with `mls0` shifted by 0, by 1, and by
+# 2, and see which shift yields the largest value. There are different
+# definitions of correlation, e.g. the Pearson correlation coefficient, but a
+# simple dot product should suffice in this case. We can do all three dot
+# products for a row at once using a matrix:
+mls0_shifts = hcat((circshift(mls0, i) for i in 0:2)...)
+
+# The first column of `mls0_shifts` is `mls0` with shift 0, the second column is
+# `mls0` with shift 1, and the third with shift 2. Multiplying
+# `sw_mls0s_predicted` with `mls0_shifts` now gives us the cross-correlations of
+# each trial with each shifted `mls0`. The `argmax` of each row gives us the
+# index where the cross-correlation is largest, and subtracting 1 gives us the
+# shift (because of Julia's 1-based indexing – ahh, everything would be so much
+# cleaner if they had chosen 0-based).
+sw_mls0s_shifts_predicted = [argmax(row) - 1
+  for row in eachrow(sw_mls0s_predicted * mls0_shifts)]
+
+# What would be our ground truth, i.e. labels, here? It would be a vector of the
+# shifts with which `mls0` was presented in the trials. So here in this
+# contrived example, it would be a 32-element vector of twos.
+sw_mls0s_shifts = fill(2, size(sw_mls0s_predicted, 1))
+
+# Now we can calculate the classification accuracy:
+sw_mls0_accuracy =
+  count(sw_mls0s_shifts_predicted .== sw_mls0s_shifts) / length(sw_mls0s_shifts)
+
+# For the frame-wise MLS classifier, the procedure would be pretty much the
+# same, except that vectors/matrices of lightness values would be used instead
+# of segment bit values, and shifts would be done in integer multiples of the
+# segment length.
+
+# I hope this tutorial will be helpful.
+(; fw_accuracy, sw_accuracy, sw_mls0_accuracy)
 
