@@ -22,14 +22,15 @@ SSVEPs.
 
 ** Overview of the repository structure and usage
 
-A Julia project with its dependencies is defined by a ~Project.toml~ file in its
-root directory. Exact version pinning is provided by the ~Manifest.toml~ file.
+In Julia, a project with its dependencies is defined by a ~Project.toml~ file in
+its root directory. Exact version pinning is provided by the ~Manifest.toml~
+file.
 
-The code in this repository is split into several subprojects that can be found
-under the [[file:packages][ ~packages~ ]] directory. A description for each of
-these can be found in the form of the module docstring. To read the docstring,
-look at the top of the file in the ~src~ directory of a package or load the
-package in Julia and use the ~?~ REPL mode.
+The code in this repository is split into several such projects that can be
+found under the [[file:packages][ ~packages~ ]] directory. A description for
+each of these can be found in the form of the module docstring. To read the
+docstring, look at the top of the file in the ~src~ directory of a package or
+load the package in Julia and use the ~?~ REPL mode.
 
 The root directory of this repository is a Julia project too. It contains a
 [[file:tutorial.jl][tutorial]] to help you get started using the models. A Julia
@@ -53,9 +54,9 @@ Note that NumPy arrays, as opposed to Julia arrays, are in
 [[https://en.wikipedia.org/wiki/Row-_and_column-major_order][row-major order]]
 by default. I don't think this will present any major challenges, but it is
 something to be aware of in terms of performance considerations when a lot of
-work is to be done on the same matrix by both languages.
+work is to be done on the same array by both languages.
 
-Calling Python from Julia is possible as well with the `PyCall` and/or `Conda`
+Calling Python from Julia is possible as well with the ~PyCall~ and/or ~Conda~
 packages.
 
 ** Notes
@@ -63,11 +64,13 @@ packages.
 *** Complex-valued frame-wise classifier
 
 As we are often interested in the phase of a certain frequency when classifying
-VEPs for BCIs, it may be sensible to make use of analytical signals. As opposed
+VEPs for BCIs, it may be sensible to make use of
+[[https://en.wikipedia.org/wiki/Analytic_signal][analytical signals]]. As opposed
 to a real-valued signal, an analytical signal is its complex-valued counterpart
 that contains both the amplitude and the phase at every time point. It can be
-computed using the Hilbert transform. The models contained in this repository
-support working with complex-valued data.
+computed using the [[https://en.wikipedia.org/wiki/Hilbert_transform][Hilbert
+transform]]. The models contained in this repository support working with
+complex-valued data.
 
 While working on my Master's thesis, I tested this in the folowing way: I
 filtered the EEG signal with a pretty sharp bandpass at 60Hz, so that not much
