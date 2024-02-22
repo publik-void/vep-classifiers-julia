@@ -1,7 +1,7 @@
 * ~vep-classifiers-julia~: Julia-based machine learning models for VEP classification
 
 This is a simplified, slightly rewritten, and better documented subset of my old
-[[https://es-git.cs.uni-tuebingen.de/niabsd/theses/non-recognizable-stimuli/classifiers-0][~classifiers-0~]]
+[[https://es-git.cs.uni-tuebingen.de/niabsd/theses/non-recognizable-stimuli/classifiers-0][ ~classifiers-0~ ]]
 repository.
 
 When referring to myself here, at the time of writing this, "I" means Lasse
@@ -26,7 +26,7 @@ A Julia project with its dependencies is defined by a ~Project.toml~ file in its
 root directory. Exact version pinning is provided by the ~Manifest.toml~ file.
 
 The code in this repository is split into several subprojects that can be found
-under the [[file:packages][~packages~]] directory. A description for each of
+under the [[file:packages][ ~packages~ ]] directory. A description for each of
 these can be found in the form of the module docstring. To read the docstring,
 look at the top of the file in the ~src~ directory of a package or load the
 package in Julia and use the ~?~ REPL mode.
