@@ -322,23 +322,28 @@ for name in [:plan_fft, :plan_fft!, :plan_rfft, :plan_bfft!, :plan_brfft]
 end
 
 """
-    mul_prepare(a; kwargs...)
+    mul_prepare(a, matvec = Val(true), adjvec = Val(true), \
+      return_plans = Val(false); kwargs...)
 
 Returns a `WindowMatrix` identical to `a`, but with the fields `mp` and `mpa`
 updated to prepare for FFT-based matrix-vector and adjoint-vector
 multiplication.
+
+# Arguments
+
+* `a`: Input `WindowMatrix`.
+* `matvec::Val`: Whether to update `a.mp` for matrix-vector multiplication.
+* `adjvec::Val`: Whether to update `a.mpa` for adjoint-vector multiplication.
+* `return_plans::Val`: Whether to return the FFT plans for use in a call to
+  `mul_prepare` on a similar `WindowMatrix`. This way, FFT planning only needs
+  to be done once. Keep in mind that `FFTW` planning routines will lock threads,
+  even for `FFTW.ESTIMATE`, it seems.
 
 # Keyword arguments:
 
 Some of these arguments set the value for multiple related arguments, which can
 also be set directly to provide more fine-grained control.
 
-* `matvec::Bool`: Whether to update `a.mp` for matrix-vector multiplication.
-* `adjvec::Bool`: Whether to update `a.mpa` for adjoint-vector multiplication.
-* `return_plans::Bool`: Whether to return the FFT plans for use in a call to
-  `mul_prepare` on a similar `WindowMatrix`. This way, FFT planning only needs
-  to be done once. Keep in mind that `FFTW` planning routines will lock threads,
-  even for `FFTW.ESTIMATE`, it seems.
 * `*_minimal_payload_size`: Smallest allowed overlap-save payload size.
 * `flags`: Sets the default flags for all FFT planning routines. Set `*_flags`
   for more fine-grained control.
@@ -351,8 +356,9 @@ also be set directly to provide more fine-grained control.
 * `*_*p`: Provide specific FFT plans to avoid re-planning.
 * `ai_is_sorted::Bool`: Whether `a.i` is sorted. Default: `issorted(a.i)`.
 """
-function mul_prepare(a::WindowMatrix{T};
-    matvec = true, adjvec = true, return_plans = false,
+function mul_prepare(a::WindowMatrix{T},
+    ::Val{matvec} = Val(true), ::Val{adjvec} = Val(true),
+    ::Val{return_plans} = Val(false);
     # TODO: Improve heuristics for the payload sizes?
     matvec_minimal_payload_size = 9a.k, adjvec_minimal_payload_size = 3a.k,
     flags = ESTIMATE, mul_flags = flags,
@@ -374,7 +380,8 @@ function mul_prepare(a::WindowMatrix{T};
     matvec_irp = nothing, matvec_wp = nothing,
     adjvec_bp = nothing, adjvec_brp = nothing, adjvec_ip = nothing,
     adjvec_irp = nothing, adjvec_wp = nothing,
-    ai_is_sorted = issorted(a.i), gfpv_flags = 0b0) where {T<:Number}
+    ai_is_sorted = issorted(a.i), gfpv_flags = 0b0
+    ) where {T <: Number, matvec, adjvec, return_plans}
   is_complex = T <: Complex
   CT = is_complex ? T : Complex{T}
 
@@ -878,13 +885,13 @@ function _sum(f, a::WindowMatrix{T}, dims, buf, ::Val{is_conj}
     return buf
   elseif 1 ∈ dims
     !f_is_id && (a = mul_prepare(broadcast(is_conj ? f_conj : f, a),
-                                 matvec = false))
+                                 Val(false), Val(true)))
     ta = f_is_id && is_conj ? a' : transpose(a)
     LinearAlgebra.mul!(view(buf, :), ta, ones(eltype(a), size(a, 1)))
     return buf
   elseif 2 ∈ dims
     !f_is_id && (a = mul_prepare(broadcast(is_conj ? f_conj : f, a),
-                                 adjvec = false))
+                                 Val(true), Val(false)))
     LinearAlgebra.mul!(view(buf, :), a, ones(eltype(a), size(a, 2)))
     f_is_id && is_conj && (buf .= conj.(buf))
     return buf
