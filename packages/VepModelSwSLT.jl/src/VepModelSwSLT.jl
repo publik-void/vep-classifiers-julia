@@ -29,8 +29,8 @@ the following, only the arguments unique to `SwSLT` are described:
 * `segment_length`: The length of a single segment (in frames, usually, but more
   broadly, in number of lightness values per segment).
 * `label_thresholds`: What is unique to `SwSLT` about this argument is that it
-  can be omitted (or set to `nothing`). If this is done, `classes` must be a
-  sorted `AbstractVector{<:Real}`. Then, the `label_thresholds` will
+  can be omitted (or set to `nothing`). If this is done, `classes` must be
+  sorted and have elements of type `<:Real`. Then, the `label_thresholds` will
   automatically be chosen (via `find_label_thresholds`) to lie exactly in the
   middle between each pair of consecutive elements of `classes`.
 """
@@ -59,21 +59,19 @@ SwSLT(segment_length, λ, std_mode, bias, thresholding, classes,
 """
     find_label_thresholds(classes)
 
-Creates a vector of values that lie exactly in the middle between each
-consecutive class pair. `issorted(classes)` must be `true`. This is equivalent
-to a running mean of size 2 without boundary padding.
+Creates a tuple of values that lie exactly in the middle between each
+consecutive class pair. `classes` must be sorted in ascending order (this is not
+enforced). The result is equivalent to a running mean of size 2 without boundary
+padding.
 """
-function find_label_thresholds(classes::AbstractVector{<:Real})
-  if !issorted(classes)
-    throw(ArgumentError("`find_label_thresholds`: `classes` must be sorted"));
-  end
-  return 1//2 .* (
-      view(classes, firstindex(classes) : lastindex(classes) - 1) .+
-      view(classes, firstindex(classes) + 1 : lastindex(classes)))
+function find_label_thresholds(classes)
+  return ((1//2 * (x0 + x1)
+    for (x0, x1) in zip(classes, Iterators.drop(classes, 1)))...,)
 end
 
 """
-    ab(model::SwSLT, lightnesses, labels; kw...)
+    ab(model::SwSLT, lightnesses, labels, materialized = Val(true),
+      compact = Val(false), [copy, copy_is]; kw...)
 
 Creates a feature marix `a` of segments in `lightnesses` and returns it with
 a copy of the label vector `b = labels`.
@@ -87,18 +85,19 @@ channels).
 `labels` is a vector of numerical segment labels, where the segments are in the
 same order as in `lightnesses`.
 
-Keyword arguments `kw...` are passed on to `VepModelFwSLT`. Defaults are set to
-`materialized = true, compact = false`.
+Further arguments `materialized`, `compact`, `copy`, `copy_is` and keyword
+arguments `kw...` are passed on to `VepModelFwSLT.ab`.
 """
-function VepModels.ab(model::SwSLT, lightnesses::AbstractVecOrMat{<:Number},
-    labels::AbstractVector{<:Number}; materialized = true, compact = false,
-    kw...)
+function VepModels.ab(model::M, lightnesses::AbstractVecOrMat{<:Number},
+    labels::AbstractVector{<:Number}, materialized = Val(true),
+    compact = Val(false), args...; kw...) where {M <: SwSLT}
   signal = transpose(reshape(transpose(lightnesses),
     (model.segment_length * size(lightnesses, 2), :)))
   size(signal, 1) == length(labels) || throw(DimensionMismatch(
     "`ab`: `length(lightnesses) ÷ model.segment_length ≠ length(labels).`"))
 
-  return ab(model.fw, signal, labels, 1; materialized, compact, kw...);
+  return ab(model.fw, signal, labels, 1, nothing, materialized, compact,
+    args...; kw...);
 end
 
 """

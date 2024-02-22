@@ -11,7 +11,10 @@ export
   # cos2pi,
   # lerp,
   # delta,
-  struct_equality
+  struct_equality,
+  make_val,
+  get_val,
+  isa_val
 
 # function cis2pi(z::T) where {T<:Number}
 #   cispi(T(2) * z)
@@ -59,6 +62,15 @@ function struct_equality(x::T, y::T, comp = (==)) where {T}
     return comp(x, y)
   end
 end
+
+make_val(x) = Val(x)
+make_val(x::Val) = x
+
+get_val(::Val{X}) where {X} = X
+
+isa_val(_) = false
+isa_val(::Val) = true
+isa_val(val::Val{X}, x) where {X} = val isa Val{x}
 
 end
 

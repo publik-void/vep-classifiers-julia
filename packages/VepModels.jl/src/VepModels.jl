@@ -4,7 +4,7 @@ module VepModels
 
 using Util: struct_equality
 using DataProcessors: DataProcessor, fit, apply
-using WindowArrays: WindowMatrix, compact!
+using WindowArrays: WindowMatrix, compact!, materialize
 using Random: randperm
 import WindowArrays
 
@@ -17,6 +17,7 @@ export
   align_with_tick,
   find_ticks,
   label_markers_to_window_indexes,
+  label_markers_to_window_indexes_and_labels,
   window_signal
 
 "Supertype for hyperparameters for turning the input signals and labels into a
@@ -108,8 +109,8 @@ end
 """
     label_markers_to_window_indexes(label_markers, sentinel = nothing)
 
-Extracts a vector of indexes from `label_markers` where the label value is not
-equal to `sentinel`. Preserves ordering of `keys(label_markers)`.
+Creates an iterator over indexes from `label_markers` where the label value is
+not equal to `sentinel`. Preserves ordering of `keys(label_markers)`.
 
 `label_markers` can be any object that supports the `keys`, `values`, and
 `valtype` methods. The keys should be of type `T where {T <: Integer}`. The
@@ -122,34 +123,54 @@ key.
 or a `Vector{Union{typeof(sentinel), LabelType}}` (dense representation where
 any time point without an associated label is designated by `sentinel`).
 """
-function label_markers_to_window_indexes(label_markers, sentinel = nothing)
-  if isnothing(sentinel) && !(Nothing <: valtype(label_markers))
+function label_markers_to_window_indexes(label_markers, sentinel = nothing,
+    ::Val{return_labels} = Val(false)) where {return_labels}
+  if return_labels; vs = values(label_markers); end
+  if isnothing(sentinel) &&
+      !(Nothing <: (return_labels ? eltype(vs) : valtype(label_markers)))
     ks = keys(label_markers)
-    return ks isa AbstractVector ? ks : collect(ks)
+    is = ks isa LinearIndices{1} ? first(ks.indices) : ks
+  else
+    is = (k for (k, v) in
+      zip(keys(label_markers), return_labels ? vs : values(label_markers))
+      if v ≠ sentinel)
+    vs = (v for v in vs if v ≠ sentinel)
   end
-  return [k for (k, v) in zip(keys(label_markers), values(label_markers))
-    if v ≠ sentinel]
+  return return_labels ?
+    (is, reshape(vs isa AbstractArray ? vs : collect(vs), (:,))) : is
 end
 
 """
-    window_signal(signal, is, window_size, signal_offset; compact = true, \
-      copy = compact, copy_is = true, is_sorted = true, kw...)
+    label_markers_to_window_indexes_and_labels(args...; kw...)
+
+Like `label_markers_to_window_indexes`, but also return a vector of labels.
+"""
+label_markers_to_window_indexes_and_labels(args...; kw...) =
+  label_markers_to_window_indexes(args..., Val(true); kw...)
+
+"""
+    window_signal(signal, is, window_size, signal_offset, \
+      materialized = Val(false), compact = Val(true), copy = compact, \
+      copy_is = Val(true); is_sorted = true, kw...)
 
 Creates a `WindowMatrix` of (potentially overlapping) windows into the `signal`
-(a ``n×m`` matrix of ``n`` time points and ``m`` channels). `is` is an
-`AbstractVector{<:Integer}` of time point indexes where windows should be
+(a ``n×m`` matrix of ``n`` time points and ``m`` channels). `is` is an iterator
+of element type `<:Integer` over time point indexes where windows should be
 created. For any `i ∈ is`, the window will start at `i + signal_offset` and have
 a length of `window_size`. `window_size` and `signal_offset` are measured in
 number of time points.
 
-If `compact` is `true`, the underlying data will be rewritten to discard all
-time points that are not covered by a window. This will e.g. speed up matrix
-multiplications in cases where substantial time spans of the signal are
-irrelevant. If `copy` is `true`, a copy of the underlying signal matrix will be
-made, so that the original data will not be overwritten.
+If `materialized` is `Val(true)`, no `WindowArrays.WindowMatrix` will be
+utilized.
 
-`is` will always be overwritten unless `copy_is` is `true`, in which case a copy
-of its data will be made.
+If `compact` is `Val(true)`, the underlying data will be rewritten to discard
+all time points that are not covered by a window. This will e.g. speed up matrix
+multiplications in cases where substantial time spans of the signal are
+irrelevant. If `copy` is `Val(true)`, a copy of the underlying signal matrix
+will be made, so that the original data will not be overwritten.
+
+If `is` is an `AbstractArray`, it will always be overwritten unless `copy_is` is
+`Val(true)`, in which case a copy of its data will be made.
 
 If `is` is not already sorted in ascending order, `is_sorted` should be set to
 `false`.
@@ -157,36 +178,31 @@ If `is` is not already sorted in ascending order, `is_sorted` should be set to
 Any further keyword arguments will be passed on to `WindowArrays.compact` or
 `WindowArrays.compact!`.
 """
-function window_signal(signal::AbstractMatrix, is::AbstractVector{<:Integer},
-    window_size::Integer, signal_offset::Integer; compact::Bool = true,
-    copy::Bool = compact, copy_is::Bool = true, is_sorted::Bool = true, kw...)
+function window_signal(signal::AbstractMatrix, is, window_size::Integer,
+    signal_offset::Integer, ::Val{materialized} = Val(false),
+    val_compact::Val{compact} = Val(true), ::Val{copy} = val_compact,
+    ::Val{copy_is} = Val(!(is isa Array)); is_sorted::Bool = true, kw...
+    ) where {materialized, compact, copy, copy_is}
   m = size(signal, 2)
-  transform_i(i::Integer) = (i - 1 + signal_offset) * m + 1
 
-  if copy_is
-    if is_sorted
-      _is = transform_i.(is)
-    else
-      _is = sort(is)
-      _is .= transform_i.(_is)
-      is_sorted = true
-    end
+  if !copy_is && is isa AbstractArray
+    is .= (is .- 1 .+ signal_offset) .* m .+ 1; _is = is
+  elseif is isa AbstractArray
+    _is = (is .- 1 .+ signal_offset) .* m .+ 1
   else
-    _is .= transform_i.(_is)
+    _is = [(i - 1 + signal_offset) * m + 1 for i in is]
   end
 
-  _signal = (copy && !compact) ? deepcopy(signal) : signal
+  _compact = compact && !materialized
+  _copy = copy && !materialized
+
+  _signal = (_copy && !_compact) ? deepcopy(signal) : signal
   a = WindowMatrix(transpose(_signal), _is, window_size * m)
 
-  if compact
-    if copy
-      return WindowArrays.compact(a; is_sorted, kw...)
-    else
-      return compact!(a; is_sorted, kw...)
-    end
-  else
-    return a
-  end
+  _a = _compact ?
+    (_copy ? WindowArrays.compact : compact!)(a; is_sorted, kw...) : a
+
+  return materialized ? materialize(_a) : _a
 end
 
 end

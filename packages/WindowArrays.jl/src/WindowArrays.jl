@@ -804,7 +804,7 @@ function Base.sum(f,
   isempty(a) && return sum(f, materialize(a); dims = dims)
 
   ds = _canonicalize_dims(AbstractMatrix, dims)
-  s = _sum(f, a, ds, _sum_buf(f, a, ds), a isa Adjoint)
+  s = _sum(f, a, ds, _sum_buf(f, a, ds), Val(a isa Adjoint))
   dims isa Colon && return first(s)
   return s
 end
@@ -826,27 +826,28 @@ function _sum_buf(f, a::AbstractMatrix, dims)
   elseif 2 ∈ dims
     return Matrix{t}(undef, size(a, 1), 1)
   end
-  return nothing
+  return Matrix{t}(undef, 0, 0)
 end
 
 function _canonicalize_dims(::Type{<:AbstractMatrix}, dims)
-  if dims isa Colon; ds = (1, 2)
-  elseif dims isa Number; ds = (dims,);
-  else; ds = (collect(dims)...,); end
-  return ds
+  dims isa Colon && return (1, 2)
+  dims isa Number && return (dims,)
+  dims isa Tuple && return dims
+  return (ds...,)
 end
 
 function _sum(f,
     a::Union{<:Transpose{T, <:WindowMatrix{T}},
              <:Adjoint{T, <:WindowMatrix{T}}},
-    dims, buf, is_conj) where {T<:Number}
-  1 ∈ dims && 2 ∈ dims && return _sum(f, a.parent, dims, buf, is_conj)
-  1 ∈ dims && return _sum(f, a.parent, (2,), buf, is_conj)
-  2 ∈ dims && return _sum(f, a.parent, (1,), buf, is_conj)
+    dims, buf, ::Val{is_conj}) where {T <: Number, is_conj}
+  1 ∈ dims && 2 ∈ dims && return _sum(f, a.parent, dims, buf, Val(is_conj))
+  1 ∈ dims && return _sum(f, a.parent, (2,), buf, Val(is_conj))
+  2 ∈ dims && return _sum(f, a.parent, (1,), buf, Val(is_conj))
   return broadcast(f, a)
 end
 
-function _sum(f, a::WindowMatrix{T}, dims, buf, is_conj) where {T<:Number}
+function _sum(f, a::WindowMatrix{T}, dims, buf, ::Val{is_conj}
+    ) where {T <: Number, is_conj}
   f_is_id = typeof(f) == typeof(identity)
   f_conj = T <: Real ? f : (f_is_id ? conj : x -> f(conj(x)))
 
@@ -887,8 +888,12 @@ function _sum(f, a::WindowMatrix{T}, dims, buf, is_conj) where {T<:Number}
     LinearAlgebra.mul!(view(buf, :), a, ones(eltype(a), size(a, 2)))
     f_is_id && is_conj && (buf .= conj.(buf))
     return buf
+  elseif dims isa Tuple{}
+    return broadcast(is_conj ? f_conj : f, a)
   end
-  return broadcast(is_conj ? f_conj : f, a)
+  # Most common cases have been handled by now, this edge case has to
+  # materialize for type stability
+  return sum(is_conj ? f_conj : f, materialize(a); dims)
 end
 
 # Redirect `mapreduce(f, +, a::WindowMatrix)` to `sum`
@@ -988,15 +993,15 @@ function compact!(v1::AbstractArray{T},   i1::AbstractArray{Int},
     l = min(k, i + k - n0 - 1)
     r0 = i .+ (k - l : k - 1)
     r1 = n1 .+ (1:l)
-    v1[r1] = v0[r0]
+    v1[r1] .= view(v0, r0)
     i1[j] = r1.stop - k + 1
     n1, n0 = r1.stop, r0.stop
   end
   return n1
 end
 
-"`compact`s the `WindowMatrix` in-place and returns a new `WindowMatrix`
-employing a `view` of the original data array."
+"`compact`s the `WindowMatrix` in-place and returns a new `WindowMatrix`,
+either `resize!`ing or employing a `view` of the original data array."
 function compact!(a::WindowMatrix; is_sorted::Bool = issorted(a.i),
     crop_only::Bool = false)
   if crop_only
@@ -1011,15 +1016,19 @@ function compact!(a::WindowMatrix; is_sorted::Bool = issorted(a.i),
   if !is_sorted
     a.i .= a.i[invperm(is)]
   end
-  return WindowMatrix(view(a.v, 1:n), a.i, a.k)
+  _v = a.v isa Array ? resize!(reshape(a.v, :), n) : view(a.v, Base.OneTo(n))
+  return WindowMatrix(_v, a.i, a.k)
 end
 
 "Creates a `WindowMatrix` with the most compact memory representation."
-function compact(a::WindowMatrix{T}; use_struct_vector::Bool = (T <: Complex),
-    is_sorted::Bool = issorted(a.i), crop_only::Bool = false) where {T}
+function compact(a::WindowMatrix{T},
+    ::Val{use_struct_vector} = Val(T <: Complex);
+    is_sorted::Bool = issorted(a.i), crop_only::Bool = false
+    ) where {T, use_struct_vector}
+  V = (use_struct_vector ? StructVector : Vector){T}
   if crop_only
     i0, i1 = a.i[1], a.i[end] + a.k - 1
-    v = (use_struct_vector ? StructVector : Vector){T}(undef, i1 - i0 + 1)
+    v = V(undef, i1 - i0 + 1)
     v .= view(a.v, i0:i1)
     return WindowMatrix(v, a.i .- (i0 - 1), a.k)
   end
@@ -1032,7 +1041,7 @@ function compact(a::WindowMatrix{T}; use_struct_vector::Bool = (T <: Complex),
     n += min(a.k, i - i_prev)
     i_prev = i
   end
-  v = (use_struct_vector ? StructVector : Vector){T}(undef, n)
+  v = V(undef, n)
   i = Vector{Int}(undef, length(a.i))
   compact!(v, i, a.v, a.i, a.k)
   return WindowMatrix(v, i, a.k)
@@ -1040,32 +1049,31 @@ end
 
 "Wrapper type to add a slice of ones to the last dimension of an
 `AbstractArray`"
-struct BiasArray{T, N, P<:AbstractArray} <: AbstractArray{T, N}
+struct BiasArray{T, N, P <: AbstractArray} <: AbstractArray{T, N}
   parent::P
   # TODO: Is this constructor okay (since it may create an object of another
   # type) or should I define a function `biasarray` instead?
-  function BiasArray(p::P; materialized = false) where {P<:AbstractArray}
+  function BiasArray(p::P, ::Val{materialized} = Val(false)
+      ) where {P <: AbstractArray, materialized}
     a = new{eltype(p), ndims(p), P}(p)
     return materialized ? materialize(a) : a
   end
 end
 
 # Override default behavior of constructor for some parent types
-function BiasArray(p::Union{Array, StructArray, <:AbstractSparseArray})
-  BiasArray(p; materialized = true)
-end
+BiasArray(p::Union{Array, StructArray, <:AbstractSparseArray}) =
+  BiasArray(p, Val(true))
 
 "Wrapper type to add a column of ones to the last dimension of an
 `AbstractMatrix`"
 const BiasMatrix{T} = BiasArray{T, 2}
 
-function Base.size(a::BiasArray)
-  return (size(a.parent)[1 : end - 1]..., size(a.parent)[end] + 1)
-end
+Base.size(a::BiasArray) =
+  (size(a.parent)[1 : end - 1]..., size(a.parent)[end] + 1)
+Base.eltype(::Type{BiasArray{T}}) where {T} = T
 
-function Base.IndexStyle(::Type{BiasArray{T, N, P}}) where {T, N, P}
-  return Base.IndexStyle(P)
-end
+Base.IndexStyle(::Type{BiasArray{<:Any, <:Any, P}}) where {P} =
+  Base.IndexStyle(P)
 
 function Base.similar(a::BiasArray, ::Type{T}, dims::Dims) where {T}
   p = Base.similar(a.parent, T, (dims[1 : end - 1]..., dims[end] - 1))

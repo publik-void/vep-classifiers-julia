@@ -92,41 +92,32 @@ abstract type Thresholding <: DataProcessor end
 # especially for the multivariate case.
 
 "2-class thresholding model specification"
-struct Binary <: Thresholding
-  t0::Real
+struct Binary{T <: Real} <: Thresholding
+  t0::T
 end
 
-function DataProcessors.fit(
-    ::Type{Binary},
-    y::AbstractVector{<:Number},
-    b::AbstractVector{<:T},
-    classes::AbstractVector{<:T}) where {T<:Any}
+function DataProcessors.fit(t::Type{<:Binary}, y::AbstractVector{<:Number},
+    b::AbstractVector{<:Number}, classes)
   y0, y1 = classes
   t0_min, t0_max = extrema(real, y)
   obj(t0) = 1. - t2a(y, b, t0, y0, y1)
   t0 = optimize(obj, t0_min, t0_max, GoldenSection()).minimizer
-  return Binary(t0)
+  return t(t0)
 end
 
-function DataProcessors.apply(
-    t::Binary,
-    y::AbstractVector{<:Number},
-    classes::AbstractVector{<:Any})
+function DataProcessors.apply(t::Binary, y::AbstractVector{<:Number}, classes)
   y0, y1 = classes
   return t2.(y, t.t0, y0, y1)
 end
 
 "3-class thresholding model specification"
-struct Ternary <: Thresholding
-  t0::Real
-  t1::Real
+struct Ternary{T <: Real} <: Thresholding
+  t0::T
+  t1::T
 end
 
-function DataProcessors.fit(
-    ::Type{Ternary},
-    y::AbstractVector{<:Number},
-    b::AbstractVector{<:T},
-    classes::AbstractVector{<:T}) where {T<:Any}
+function DataProcessors.fit(t::Type{<:Ternary}, y::AbstractVector{<:Number},
+    b::AbstractVector{<:Number}, classes)
   y0, y1, y2 = classes
   t0_min, t0_max = extrema(real, y)
   t1_max = t0_max
@@ -134,13 +125,11 @@ function DataProcessors.fit(
   t0 = optimize(t0 -> obj(t0, optimize(t1 -> obj(t0, t1), t0, t1_max,
     GoldenSection()).minimizer), t0_min, t0_max, GoldenSection()).minimizer
   t1 = optimize(t1 -> obj(t0, t1), t0, t1_max, GoldenSection()).minimizer
-  return Ternary(t0, t1)
+  return t(t0, t1)
 end
 
-@inline function DataProcessors.apply(
-    t::Ternary,
-    y::AbstractVector{<:Number},
-    classes::AbstractVector{<:Any})
+@inline function DataProcessors.apply(t::Ternary, y::AbstractVector{<:Number},
+    classes)
   y0, y1, y2 = classes
   return t3.(y, t.t0, t.t1, y0, y1, y2)
 end

@@ -73,6 +73,8 @@ eeg[vep_time_span, :] .+= vep
 # We won't do any pre-filtering for the sake of simplicity. Suffice it to say
 # that it might be helpful to use highpass, lowpass, and notch filters on real
 # EEG data to discard irrelevant frequency bands and power line interference.
+# There may also be something to gain from other kinds of preprocessing, such as
+# amplitude normalization of channels or spatial filtering.
 
 # For the trigger signal, let's say we have two single-bit time series: The
 # clock signal and the segment labeling. The clock signal in this case switches
@@ -118,8 +120,8 @@ fw = FwSLT(
   :μ_σ,
   false,
   Binary,
-  BitVector((false, true)),
-  [.0];
+  (false, true),
+  (.0,);
   atol = 1e-6,
   btol = 1e-6)
 
@@ -225,7 +227,7 @@ fw_a, fw_b = ab(fw, eeg, label_markers, samples_per_second)
 # FFT and `plan_fft!` plans a forward complex in-place FFT. The buffer sizes
 # used by `WindowArrays` are always integer powers of two.
 using WindowArrays
-populate_fft_plan_cache( # TODO
+populate_fft_plan_cache(
   [:plan_rfft, :plan_brfft],
   [Float64, ComplexF64],
   [2^12])
@@ -309,7 +311,7 @@ sw = SwSLT(
   :μ_σ,
   true,
   Binary,
-  BitVector((false, true));
+  (false, true);
   atol = 1e-6,
   btol = 1e-6)
 

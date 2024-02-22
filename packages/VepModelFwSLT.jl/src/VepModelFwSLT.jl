@@ -1,12 +1,13 @@
 "Module providing the `FwSLT` model. See `VepModelFwSLT.FwSLT`."
 module VepModelFwSLT
 
+using Util: make_val, get_val
 using WindowArrays: WindowMatrix, BiasMatrix, BiasArray, mul_prepare,
-  materialize, gfpv_new_plan
+  gfpv_new_plan
 using Standardizations: AffStd, fit, apply!
 using Thresholdings: Thresholding, fit, apply
 using VepModels: VepModel, ab, fit, apply, window_signal,
-  label_markers_to_window_indexes
+  label_markers_to_window_indexes_and_labels
 using IterativeSolvers: lsmr!
 import VepModels
 
@@ -34,21 +35,20 @@ regression, and thresholding. Tries to make use of `WindowArrays`.
 * `bias`: `Bool` specifying whether to include a bias term in the regression.
 * `thresholding`: A subtype of `Thresholdings.Thresholding` to indicate what
   kind of thresholding to use.
-* `classes`: An `AbstractVector` containing one assigned output value for each
+* `classes`: An iterable object containing one assigned output value for each
   thresholding class.
-* `label_thresholds`: An `AbstractVector` containing the thresholds to be used
+* `label_thresholds`: An iterable object containing the thresholds to be used
   to convert training labels to thresholding classes.
 * `kw...`: Keyword arguments for the LSMR algorithm (e.g. stopping tolerances).
   See documentation for `IterativeSolvers.lsmr!`.
 """
-struct FwSLT{WS <: Real, SO <: Real, Λ <: Real, T <: Thresholding,
-    C <: AbstractVector, LT <: AbstractVector{<:Number},
-    LK <: Base.ImmutableDict{Symbol, <:Any}} <: VepModel
+struct FwSLT{SM, B, WS <: Real, SO <: Real, Λ <: Real, T <: Thresholding,
+    C, LT, LK <: Base.ImmutableDict{Symbol, <:Any}} <: VepModel
   window_size::WS
   signal_offset::SO
   λ::Λ
-  std_mode::Symbol
-  bias::Bool
+  std_mode::Val{SM}
+  bias::Val{B}
   thresholding::Type{T}
   classes::C
   label_thresholds::LT
@@ -57,8 +57,13 @@ end
 
 FwSLT(window_size, signal_offset, λ, std_mode, bias,
     thresholding, classes, label_thresholds; kw...) =
-  FwSLT(window_size, signal_offset, λ, std_mode, bias, thresholding, classes,
-    label_thresholds, Base.ImmutableDict(kw...))
+  FwSLT(window_size, signal_offset, λ, make_val(std_mode), make_val(bias),
+    thresholding, classes, label_thresholds, Base.ImmutableDict(kw...))
+
+function Base.getproperty(x::FwSLT, name::Symbol, args...)
+  name in (:std_mode, :bias) && return get_val(getfield(x, name, args...))
+  return getfield(x, name, args...)
+end
 
 "A wrapper for `mul_prepare` that handles non-`WindowMatrix` matrices and prints
 a notification in case no FFT plan was precomputed."
@@ -66,11 +71,11 @@ _mul_prepare(a::AbstractMatrix{<:Number}) = a
 _mul_prepare(a::WindowMatrix{<:Number}) =
   mul_prepare(a; gfpv_flags = gfpv_new_plan)
 _mul_prepare(a::BiasMatrix{<:Number}) =
-  BiasArray(_mul_prepare(a.parent); materialized = false)
+  BiasArray(_mul_prepare(a.parent), Val(false))
 
 """
-    ab(model::FwSLT, signal, label_markers, sampling_rate, sentinel = nothing; \
-      materialized = false, kw...)
+    ab(model::FwSLT, signal, label_markers, sampling_rate, sentinel = nothing, \
+      [materialized, compact, copy, copy_is]; kw...)
 
 Creates a feature matrix `a` of sliding windows and a corresponding label vector
 `b` from the input `signal` and input `label_markers`. Returns `(a, b)`.
@@ -85,26 +90,20 @@ set to `false`.
 
 The `sampling_rate` of the signal is measured in Hz (time points per second).
 
-If `materialized` is `true`, no `WindowArrays.WindowMatrix` will be utilized.
-
-Further keyword arguments `kw...` are passed on to `VepModels.window_signal`.
+Further arguments `materialized`, `compact`, `copy`, `copy_is` and keyword
+arguments `kw...` are passed on to `VepModels.window_signal`.
 """
-function VepModels.ab(model::FwSLT, signal::AbstractMatrix{<:Number},
-    label_markers, sampling_rate::Real, sentinel = nothing;
-    materialized = false, kw...)
+function VepModels.ab(model::M, signal::AbstractMatrix{<:Number},
+    label_markers, sampling_rate::Real, sentinel = nothing, args...; kw...
+  ) where {bias, M <: FwSLT{<:Any, bias}}
   window_size = Int(round(model.window_size * sampling_rate))
   signal_offset = Int(round(model.signal_offset * sampling_rate))
 
-  if materialized; kw = merge(kw, pairs((compact = false, copy = false))); end
-
-  is = label_markers_to_window_indexes(label_markers, sentinel)
-  b = [label_markers[i] for i in is]
-  a = window_signal(signal, is, window_size, signal_offset; kw...)
-
-  if materialized; a = materialize(a); end
+  is, b = label_markers_to_window_indexes_and_labels(label_markers, sentinel)
+  a = window_signal(signal, is, window_size, signal_offset, args...; kw...)
 
   # Don't materialize the `BiasArray` because `AffStd` won't handle it correctly
-  if model.bias; a = BiasArray(a; materialized = false); end
+  if bias; a = BiasArray(a, Val(false)); end
 
   size(a, 1) == length(b) ||
     throw(DimensionMismatch("`ab`: `size(a, 1) ≠ `length(b)`"))
@@ -140,9 +139,9 @@ function VepModels.fit(model::FwSLT, a::AbstractMatrix{<:Number},
     allow_overwrite_a::Bool = true, init_scale = 2, init_offset = 0)
   a = _mul_prepare(a)
 
-  std = fit(AffStd, a, model.std_mode)
-  apply_std_kw = allow_overwrite_a ? () : (; lazy = true)
-  a = apply!(std, a; apply_std_kw...)
+  std = fit(AffStd, a, Val(model.std_mode))
+  apply_std_arg = allow_overwrite_a ? () : (Val(true),)
+  a = apply!(std, a, apply_std_arg...)
 
   x = rand(eltype(a), size(a, 2))
   x .= (x .- 1//2) .* (2 * init_scale) .+ init_scale
@@ -169,8 +168,8 @@ function VepModels.apply(model::FwSLT, a::AbstractMatrix{<:Number},
       Thresholding}};
     allow_overwrite_a::Bool = true)
   a = _mul_prepare(a)
-  apply_std_kw = allow_overwrite_a ? () : (; lazy = true)
-  a = apply!(fit.std, a; apply_std_kw...)
+  apply_std_arg = allow_overwrite_a ? () : (Val(true),)
+  a = apply!(fit.std, a, apply_std_arg...)
   return apply(fit.t, a * fit.x, model.classes)
 end
 

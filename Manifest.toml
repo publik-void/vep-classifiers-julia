@@ -542,7 +542,7 @@ version = "2.3.1"
     ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
 
 [[deps.Standardizations]]
-deps = ["DataProcessors", "LinearAlgebra", "Statistics", "WindowArrays"]
+deps = ["DataProcessors", "LinearAlgebra", "Statistics", "Util", "WindowArrays"]
 path = "packages/Standardizations.jl"
 uuid = "5db0b911-c06e-46a6-8bfe-fd9190495816"
 version = "0.0.1"

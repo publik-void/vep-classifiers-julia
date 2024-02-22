@@ -27,7 +27,7 @@ struct AffStd{M<:Union{Nothing, <:AbstractMatrix{<:Number}},
   s::S
 end
 
-function DataProcessors.is_id(std::AffStd; full_check = false)
+function DataProcessors.is_id(std::AffStd; full_check = true)
   if isnothing(std.m) && isnothing(std.s)
     return true
   elseif full_check
@@ -43,18 +43,18 @@ end
 
 "Wraps an `AbstractMatrix` with an `AffStd` applied to it lazily."
 struct AffStdMatrix{T<:Number,
-    A<:AbstractMatrix{<:Number},
-    SR<:Union{Nothing, <:AbstractArray{<:Number}},
-    MSR<:Union{Nothing, <:AbstractArray{<:Number}}} <: AbstractMatrix{T}
+    A <: AbstractMatrix{<:Number},
+    SR <: Union{Nothing, <:AbstractArray{<:Number}},
+    MSR <: Union{Nothing, <:AbstractArray{<:Number}}} <: AbstractMatrix{T}
   parent::A
   sr::SR # Reciprocal of `AffStd(…).s`
   msr::MSR # `AffStd(…).m .* sr`
 end
 
 @inline function default_use_lazy(std::AffStd, a::AbstractMatrix)
-  a isa WindowMatrix && return true
-  !isnothing(std.s) && eltype(a) <: Integer && return true
-  return false
+  a isa WindowMatrix && return Val(true)
+  !isnothing(std.s) && eltype(a) <: Integer && return Val(true)
+  return Val(false)
 end
 
 AffStdMatrix{T}(a, sr, msr) where {T} =
@@ -63,12 +63,12 @@ AffStdMatrix{T}(a, sr, msr) where {T} =
 _inv(x::Integer) = true//x
 _inv(x) = inv(x)
 
-function AffStdMatrix(a::AbstractMatrix{<:Number}, std::AffStd;
-    materialized = !default_use_lazy(std, a))
+function AffStdMatrix(a::AbstractMatrix{<:Number}, std::AffStd,
+    ::Val{lazy} = default_use_lazy(std, a)) where {lazy}
   # TODO: Does this allocate more than necessary?
   # TODO: Perhaps canonicalize this to always create vectors (`vec` may prduce
   # something like a `reshape`), or would it be nicer not to do that?
-  materialized && return apply(a, std; lazy = false)
+  lazy || return apply(a, std, Val(false))
   has_m, has_s = !isnothing(std.m), !isnothing(std.s)
   sr = !has_s ? nothing : vec(_inv.(transpose(std.s)))
   msr = !has_m ?
@@ -81,10 +81,10 @@ end
 
 Base.size(a::AffStdMatrix) = size(a.parent)
 Base.eltype(::Type{AffStdMatrix{T}}) where {T} = T
+Base.IndexStyle(::Type{AffStdMatrix{<:Any, A}}) where {A} = Base.IndexStyle(A)
 
-@inline function Base.getindex(a::AffStdMatrix{<:Number, <:Any, SR, MSR},
-    i0::Int, i1::Int) where {SR, MSR}
-  has_s, has_m = !(SR <: Nothing), !(MSR <: Nothing)
+@inline function Base.getindex(a::AffStdMatrix, i0::Int, i1::Int)
+  has_s, has_m = !isnothing(a.sr), !isnothing(a.msr)
   !has_s && !has_m && return getindex(a.parent, i0, i1)
   has_s  && !has_m && return getindex(a.parent, i0, i1) * a.sr[i1]
   !has_s &&  has_m && return getindex(a.parent, i0, i1) - a.msr[i1]
@@ -95,10 +95,10 @@ end
 
 @inline function LinearAlgebra.mul!(
     c::AbstractVector{<:Number},
-    a::AffStdMatrix{<:Number, <:Any, SR, MSR},
+    a::AffStdMatrix{<:Number},
     b::AbstractVector{<:Number},
-    α::Number, β::Number) where {SR, MSR}
-  has_s, has_m = !(SR <: Nothing), !(MSR <: Nothing)
+    α::Number, β::Number)
+  has_s, has_m = !isnothing(a.sr), !isnothing(a.msr)
   !has_s && !has_m && return LinearAlgebra.mul!(c, a.parent, b, α, β)
   has_s  && !has_m && return LinearAlgebra.mul!(c, a.parent, b .* a.sr, α, β)
   !has_s && has_m  && (LinearAlgebra.mul!(c, a.parent, b, α, β);
@@ -111,10 +111,10 @@ end
 
 @inline function LinearAlgebra.mul!(
     c::AbstractVector{<:Number},
-    a::Adjoint{<:Number, <:AffStdMatrix{<:Number, <:Any, SR, MSR}},
+    a::Adjoint{<:Number, <:AffStdMatrix{<:Number}},
     b::AbstractVector{<:Number},
-    α::Number, β::Number) where {SR, MSR}
-  has_s, has_m = !(SR <: Nothing), !(MSR <: Nothing)
+    α::Number, β::Number)
+  has_s, has_m = !isnothing(a.parent.sr), !isnothing(a.parent.msr)
   !has_s && !has_m && return LinearAlgebra.mul!(c, a.parent.parent', b, α, β)
   # TODO: Other cases
   # TODO: Profile and optimize this.
@@ -145,11 +145,11 @@ end
   return y
 end
 
-@inline function DataProcessors.apply!(std::AffStd,
-    a::AbstractMatrix{<:Number}; lazy = default_use_lazy(std, a))
+@inline function DataProcessors.apply!(std::AffStd, a::AbstractMatrix{<:Number},
+    ::Val{lazy} = default_use_lazy(std, a)) where {lazy}
   has_m, has_s = !isnothing(std.m), !isnothing(std.s)
   !has_m && !has_s && return a
-  lazy && return apply(std, a; lazy = true)
+  lazy && return apply(std, a, Val(true))
   # Specialization for `WindowMatrix` auto-materializes when `!lazy`.
   a isa WindowMatrix && return apply!(std, similar(a), a)
   return apply!(std, a, a)
@@ -158,28 +158,25 @@ end
 # Specialization for `BiasMatrix` does not standardize bias term.
 # Note: This specialization is only needed to support parent types that are not
 # directly supported by `apply!(std, a.parent, a.parent)`.
-@inline function DataProcessors.apply!(std::AffStd,
-    a::BiasMatrix{<:Number}; kwargs...)
-  return BiasArray(apply!(std, a.parent; kwargs...); materialized = false)
-end
+@inline DataProcessors.apply!(std::AffStd, a::BiasMatrix{<:Number}) =
+  BiasArray(apply!(std, a.parent), Val(false))
 
-@inline function DataProcessors.apply(std::AffStd,
-    a::AbstractMatrix{<:Number}; lazy = default_use_lazy(std, a))
+@inline function DataProcessors.apply(std::AffStd, a::AbstractMatrix{<:Number},
+    ::Val{lazy} = default_use_lazy(std, a)) where {lazy}
   has_m, has_s = !isnothing(std.m), !isnothing(std.s)
   !has_m && !has_s && return a
   !lazy && return apply!(std, similar(a), a)
-  return AffStdMatrix(a, std; materialized = false)
+  return AffStdMatrix(a, std, Val(true))
 end
 
 # Specialization for `BiasMatrix` does not standardize bias term.
-@inline function DataProcessors.apply(std::AffStd,
-    a::BiasMatrix{<:Number}; kwargs...)
-  return BiasArray(apply(std, a.parent; kwargs...); materialized = false)
-end
+@inline DataProcessors.apply(std::AffStd, a::BiasMatrix{<:Number},
+    ::Val{lazy} = default_use_lazy(std, a)) where {lazy} =
+  BiasArray(apply(std, a.parent, Val(lazy)), Val(false))
 
 # TODO: Confirm that `fit` runs efficiently on `WindowMatrix`.
 """
-    fit(::Type{AffStd}, a, mode = :identity; exclude = nothing)
+    fit(::Type{AffStd}, a, mode = Val(:identity), exclude = nothing)
 
 Create affine standardization parameters fitted to the matrix `a` and return
 them as an object of type `AffStd`.
@@ -193,17 +190,17 @@ Supported `mode`s:
 If `exclude` is not `nothing`, it is interpreted as an index (as accepted by \
   `setindex!`, e.g. a `Vector{Int}`) of columns to exclude from standardization.
 """
-function DataProcessors.fit(::Type{AffStd}, a::AbstractMatrix{<:Number},
-    mode::Symbol = :identity;
-    exclude::Union{Nothing, <:AbstractVector{<:Integer}} = nothing)
+function DataProcessors.fit(t::Type{<:AffStd}, a::AbstractMatrix{<:Number},
+    ::Val{mode} = Val(:identity),
+    exclude::Union{Nothing, <:AbstractVector{<:Integer}} = nothing) where {mode}
   m, s = nothing, nothing
   if mode == :identity
     # Nothing to be done
 
   elseif mode == :μ_absgeom
     m = mean(a; dims = 1)
-    t = typeof(abs(a[1]))(1e-18)
-    s = exp.(mean(log.(max.(abs.(a .- m), t)); dims = 1)) # TODO: Efficiency
+    thr = typeof(abs(a[1]))(1e-18)
+    s = exp.(mean(log.(max.(abs.(a .- m), thr)); dims = 1)) # TODO: Efficiency
 
   elseif mode == :μ_σ
     m = mean(a; dims = 1)
@@ -215,14 +212,13 @@ function DataProcessors.fit(::Type{AffStd}, a::AbstractMatrix{<:Number},
     !isnothing(m) && (m[exclude] .= zero(eltype(m)))
     !isnothing(s) && (s[exclude] .=  one(eltype(s)))
   end
-  return AffStd(m, s)
+  return t(m, s)
 end
 
 # Specialization for `BiasMatrix` does not fit bias term.
-function DataProcessors.fit(::Type{AffStd}, a::BiasMatrix{<:Number},
-    mode::Symbol = :identity;
-    exclude::Union{Nothing, <:AbstractVector{<:Integer}} = nothing)
-  return fit(AffStd, a.parent, mode; exclude = exclude)
-end
+DataProcessors.fit(t::Type{<:AffStd}, a::BiasMatrix{<:Number},
+    mode::Val = Val(:identity),
+    exclude::Union{Nothing, <:AbstractVector{<:Integer}} = nothing) =
+  fit(AffStd, a.parent, mode, exclude)
 
 end
