@@ -42,7 +42,7 @@ frames_per_trial = length(stimulus_lightness_labels)
 
 # Next, let's say we show the stimulus at a frame rate of 100Hz, while sampling
 # the EEG and trigger data at 1000Hz, so that we have 10 samples per frame. The
-# stimulus with its 30720 frames would then have a duration of 30.72s. Yes, this
+# stimulus with its 3072 frames would then have a duration of 30.72s. Yes, this
 # is one unrealistically long stimulus. Normally, we would have multiple shorter
 # stimuli.
 samples_per_frame = 10
@@ -130,18 +130,31 @@ fw = FwSLT(
 # Sebastian Nagel, Alexander Blöck, and probably others have been doing prior to
 # that). It classifies the lightness value of individual time points by placing
 # a window around them in the EEG signal and running three stages of machine
-# learning on them. The first stage is a feature standardization by affine
-# (linear) transformation. The `:μ_σ` above specifies that the features should
-# be standardized to have a mean of zero and a variance of 1. The second stage
-# is a ridge regression. With the above parameters, the ridge regression will
-# have a λ parameter of 1 and no bias term. I have usually not seen performance
-# improvements from incorporating a bias term in the feature matrix, though I
-# suspect that would change when the EEG siganl is not highpass-filtered or when
-# the label vector has a mean that is significantly different from zero.
+# learning on them.
+
+# In the above, as a starting point, the windows are set to have the same size
+# as one CCVEP segment, and to be centered around the time point in question,
+# respecting the `vep_delay` (that is, the (usually unknown) time it takes for a
+# change on the screen to show up as a VEP in the EEG).
+
+# The first machine learning stage that the model performs on each window is a
+# feature standardization by affine (linear) transformation. The `:μ_σ` above
+# specifies that the features should be standardized to have a mean of zero and
+# a variance of 1.
+
+# The second stage is a ridge regression. With the above parameters, the ridge
+# regression will have a λ parameter of 1 and no bias term. I have usually not
+# seen performance improvements from incorporating a bias term in the feature
+# matrix, though I suspect that would change when the EEG siganl is not
+# highpass-filtered or when the label vector has a mean that is significantly
+# different from zero.
+
 # The third stage performs a thresholding to convert continuous lightness values
 # to discrete labels such as "black" and "white" (represented by `false` and
-# `true` in this case). The `atol` and `btol` are stopping criteria for the
-# optimization algorithm. Using 64-bit floating point precision and the
+# `true` in this case).
+
+# The `atol` and `btol` are stopping criteria for the optimization algorithm
+# used for the ridge regression . Using 64-bit floating point precision and the
 # tolerance value of `1e-6` has usually resulted in a good trade-off between
 # accuracy of the solution and runtime for me. It is a bit unfortunate, but I
 # would not recommend using 32-bit floats for the EEG signal / feature matrix.
