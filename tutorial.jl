@@ -145,7 +145,7 @@ fw = FwSLT(
 # The second stage is a ridge regression. With the above parameters, the ridge
 # regression will have a λ parameter of 1 and no bias term. I have usually not
 # seen performance improvements from incorporating a bias term in the feature
-# matrix, though I suspect that would change when the EEG siganl is not
+# matrix, though I suspect that this would change when the EEG siganl is not
 # highpass-filtered or when the label vector has a mean that is significantly
 # different from zero.
 
