@@ -321,13 +321,23 @@ for name in [:plan_fft, :plan_fft!, :plan_rfft, :plan_bfft!, :plan_brfft]
   eval(def)
 end
 
+# TODO: `adjvec = Val(false)` currently, because the FFT-based adjoint-vector
+# multiplication produces faulty results. If it gets fixed at some point in the
+# future, it should be enabled by default again. And the note in the docstring
+# should be removed.
 """
-    mul_prepare(a, matvec = Val(true), adjvec = Val(true), \
+    mul_prepare(a, matvec = Val(true), adjvec = Val(false), \
       return_plans = Val(false); kwargs...)
 
 Returns a `WindowMatrix` identical to `a`, but with the fields `mp` and `mpa`
 updated to prepare for FFT-based matrix-vector and adjoint-vector
 multiplication.
+
+!!! note
+    `adjvec = Val(true)` produces faulty results currently.
+    There is an open to-do item about this in `$(@__FILE__)`.
+    It is okay to just leave it disabled for now, because there exists a
+    non-FFT-based multiplication method that is relatively efficient as well.
 
 # Arguments
 
@@ -357,7 +367,7 @@ also be set directly to provide more fine-grained control.
 * `ai_is_sorted::Bool`: Whether `a.i` is sorted. Default: `issorted(a.i)`.
 """
 function mul_prepare(a::WindowMatrix{T},
-    ::Val{matvec} = Val(true), ::Val{adjvec} = Val(true),
+    ::Val{matvec} = Val(true), ::Val{adjvec} = Val(false),
     ::Val{return_plans} = Val(false);
     # TODO: Improve heuristics for the payload sizes?
     matvec_minimal_payload_size = 9a.k, adjvec_minimal_payload_size = 3a.k,
@@ -605,6 +615,15 @@ end
   return c
 end
 
+# TODO: At the moment, this FFT-based adjoint-vector multiplication method
+# produces faulty results. It might need to be rewritten from scratch, together
+# with the part of `mul_prepare` that precomputes the data needed for this
+# method.
+# As a conceptual starting point: The multiplication has to convolve
+# `a.parent.v` with a sparse vector whose elements are determined from `b`,
+# and their indexes are determined by `a.i`. Only a small portion of the whole
+# convolved signal has to be computed, which is why it should be possible to
+# implement the otherwise large convolution efficiently.
 @inline function LinearAlgebra.mul!(
     c::AbstractVector{<:Number},
     a::Ad,
@@ -619,8 +638,6 @@ end
   # On lucille (ppc64le) for A, B = Float64:    ~1.3x slower, and allocates
   # On lucille (ppc64le) for A, B = ComplexF32: ~1.9x faster, so-so numerics
   # On lucille (ppc64le) for A, B = ComplexF64: ~1.1x faster
-  # TODO: Find out why numerics are so much worse for Float32 than ComplexF32
-  # and what can be done. Is it simply because of running sums?
 
   inputs_are_real = A <: Real && B <: Real              # Separate methods would
   mpa_is_real = MPA <: WindowMatrixMulPreparation{Real} # mean code duplication.
@@ -637,25 +654,46 @@ end
   @inbounds for i in axes(a.mpa.ws, 2)
     # Note: Dead branches should be optimized away by the compiler here.
     _buf .= zero(eltype(_buf))
-    !is_transpose && _copy_els(_buf, a.mpa.iss[i].buf_i, b, a.mpa.iss[i].b_i)
-    is_transpose  && _copy_els(_buf, a.mpa.iss[i].buf_i, b, a.mpa.iss[i].b_i,
-                               (x, y) -> conj(y))
+    _copy_els(_buf, a.mpa.iss[i].buf_i, b, a.mpa.iss[i].b_i,
+      is_transpose ? (_, x) -> conj(x) : (_, x) -> x)
+
     buf = _bp * _buf
     if inputs_are_real
-      buf .*= view(a.mpa.ws, 1:a.mpa.k, i)
+      buf .*= view(a.mpa.ws, Base.OneTo(a.mpa.k), i)
     else
       if !mpa_is_real
         buf .*= view(a.mpa.ws, :, i)
       else
-        view(buf, 1:a.mpa.k) .*= view(a.mpa.ws, :, i)
+        view(buf, Base.OneTo(a.mpa.k)) .*= view(a.mpa.ws, :, i)
         view(buf, a.mpa.k + 1 : length(buf)) .*=
           conj.(view(a.mpa.ws, a.mpa.k - 1 : -1 : 2, i))
       end
     end
     buf = _ip * buf
 
-    !is_transpose && (c .+= view(buf, 1:a.k) .* α)
-    is_transpose  && (c .+= conj.(view(buf, 1:a.k)) .* α)
+    if is_transpose
+      c .+= conj.(view(buf, Base.OneTo(a.k))) .* α
+    else
+      c .+= view(buf, Base.OneTo(a.k)) .* α
+    end
+  end
+  return c
+end
+
+@inline function LinearAlgebra.mul!(
+    c::AbstractVector{C}, a::Ad, b::AbstractVector{B},
+    α::Number, β::Number) where {A <: Number, B <: Number, C <: Number,
+      WM <: WindowMatrix{A, <:Any, <:Any, <:Any, Nothing},
+      Ad <: Union{<:Adjoint{A, WM}, <:Transpose{A, WM}}}
+  is_transpose = Ad <: Transpose
+
+  a = a.parent
+  f = is_transpose ? identity : conj
+
+  c .*= β
+  @inbounds for i in axes(a, 1)
+    _i = a.i[i]
+    c .+= f.(view(a.v, _i : _i + (a.k - 1))) .* (b[i] * α)
   end
   return c
 end
@@ -667,7 +705,7 @@ end
 # indexing, and somewhat unexpectedly seems to be more efficient in any case
 # where at least one of `is` and `js` is some vector of indexes, i.e. not a
 # range. Seems to be because indexing usually allocates new arrays.
-@inline function _copy_els(xs, is, ys, js, op = (x, y) -> y)
+@inline function _copy_els(xs, is, ys, js, op = (_, y) -> y)
   @inbounds for (i, j) in zip(is, js)
     xs[i] = op(xs[i], ys[j])
   end
