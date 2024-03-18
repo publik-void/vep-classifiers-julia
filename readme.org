@@ -72,7 +72,7 @@ computed using the [[https://en.wikipedia.org/wiki/Hilbert_transform][Hilbert
 transform]]. The models contained in this repository support working with
 complex-valued data.
 
-While working on my Master's thesis, I tested this in the folowing way: I
+While working on my Master's thesis, I tested this in the following way: I
 filtered the EEG signal with a pretty sharp bandpass at 60Hz, so that not much
 other frequency content remained. I approximated a Hilbert filter by adding an
 imaginary component to the signal that was simply the real component filtered by
