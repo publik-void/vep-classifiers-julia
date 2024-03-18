@@ -8,6 +8,7 @@ using FFTW: plan_fft, plan_fft!, plan_rfft, plan_bfft!, plan_brfft,
   FFTW.ESTIMATE, FFTW.MEASURE
 using AbstractFFTs: AbstractFFTs.Plan
 using ThreadSafeDicts: ThreadSafeDict
+using Base.Threads: nthreads
 using LinearAlgebra: Adjoint, Transpose
 import LinearAlgebra
 # import Statistics
@@ -681,21 +682,196 @@ end
 end
 
 @inline function LinearAlgebra.mul!(
-    c::AbstractVector{C}, a::Ad, b::AbstractVector{B},
-    α::Number, β::Number) where {A <: Number, B <: Number, C <: Number,
-      WM <: WindowMatrix{A, <:Any, <:Any, <:Any, Nothing},
-      Ad <: Union{<:Adjoint{A, WM}, <:Transpose{A, WM}}}
+    c::AbstractVector{<:Number}, a::Ad, b::AbstractVector{<:Number},
+    α::Number, β::Number;
+    fanout::Real = 16, n_threads::Real = 1.,
+    threading_granularity_factor::Real = -.5) where {
+      WM <: WindowMatrix{<:Number, <:Any, <:Any, <:Any, Nothing},
+      Ad <: Union{<:Adjoint{<:Number, WM}, <:Transpose{<:Number, WM}}}
   is_transpose = Ad <: Transpose
 
   a = a.parent
   f = is_transpose ? identity : conj
 
   c .*= β
-  @inbounds for i in axes(a, 1)
-    _i = a.i[i]
+
+  parameters = axes(a, 1)
+  rt = ReductionTree(fanout, eachindex(parameters), n_threads,
+    threading_granularity_factor)
+  @inline step(c, i, _) = let _i = a.i[i]
     c .+= f.(view(a.v, _i : _i + (a.k - 1))) .* (b[i] * α)
   end
-  return c
+  @inline combine(c, buf) = c .+= buf
+
+  return reduce(step, combine, rt, zero(eltype(c)), parameters, c)
+end
+
+# Helper type to partition reductions into tree structures
+struct ReductionTree{I <: Integer}
+  in_indexes::UnitRange{I}
+  out_index::Int
+  threaded::Bool
+  children::Vector{ReductionTree{I}}
+
+  ReductionTree{I}(in_indexes::AbstractUnitRange, out_index::Int = 0,
+      threaded::Bool = false, children = ReductionTree{I}[]
+      ) where {I <: Integer} =
+    new{I}(convert(UnitRange{I}, in_indexes), out_index, threaded,
+      children isa Vector{ReductionTree{I}} ?
+        children : ReductionTree{I}[children...])
+end
+
+ReductionTree(in_indexes::AbstractUnitRange{I}, args...) where {I <: Integer} =
+  ReductionTree{I}(in_indexes, args...)
+
+function ReductionTree(fanout::Real, in_indexes::AbstractUnitRange{<:Integer},
+    n_threads::Real = 1., threading_granularity_factor::Real = 0.,
+    out_index::Int = 0, next_out_index::Int = 1, n::Int = length(in_indexes))
+  I = eltype(in_indexes)
+  n_threads *= fanout ^ threading_granularity_factor
+  use_threading = n_threads > 1
+
+  if n ≤ fanout
+    return ReductionTree(in_indexes, out_index, use_threading)
+  else
+    n_sublevels = floor(log(fanout, n - 1))
+    balanced = true
+    partition_size = convert(I, ceil(balanced ?
+      n / ceil(n / fanout ^ n_sublevels) : fanout ^ n_sublevels))
+    partition_start_indexes =
+      first(in_indexes) : partition_size : last(in_indexes)
+    n_partitions = length(partition_start_indexes)
+
+    if use_threading
+      threads_per_partition = ceil(n_threads / n_partitions)
+      threads_for_last_partition = balanced ? threads_per_partition :
+        n_threads - threads_per_partition * (n_partitions - 1)
+    end
+
+    rt = ReductionTree{I}(true:false, out_index, use_threading,
+      Vector{ReductionTree{I}}(undef, n_partitions))
+    next_next_out_index = next_out_index + (use_threading ? n_partitions : 1)
+    for (i, partition_start_index) in enumerate(partition_start_indexes)
+      if i < n_partitions
+        partition_in_indexes = (partition_start_index :
+          partition_start_index + partition_size - one(I))
+        partition_n = convert(Int, partition_size)
+        next_n_threads = use_threading ? threads_per_partition : one(n_threads)
+      else
+        partition_in_indexes = partition_start_index : last(in_indexes)
+        partition_n = length(partition_in_indexes)
+        next_n_threads =
+          use_threading ? threads_for_last_partition : one(n_threads)
+      end
+      rt.children[i] = ReductionTree(fanout, partition_in_indexes,
+        next_n_threads, zero(threading_granularity_factor),
+        use_threading ? next_out_index + i - 1 : next_out_index,
+        next_next_out_index, partition_n)
+      if use_threading
+        next_next_out_index = get_last_out_index(rt.children[i]) + 1
+      end
+    end
+    return rt
+  end
+end
+
+get_last_out_index(rt::ReductionTree) =
+  isempty(rt.children) ? rt.out_index : get_last_out_index(last(rt.children))
+
+function Base.show(io::IO, rt::ReductionTree)
+  show(io, typeof(rt))
+  print(io, "(")
+  show(io, rt.in_indexes)
+  print(io, ", ")
+  show(io, rt.out_index)
+  print(io, ", ")
+  show(io, rt.threaded)
+  print(io, ", ")
+  if get(io, :compact, false)
+    show(io, rt.children)
+  else
+    show(io, eltype(rt.children))
+    print(io, "[")
+    is_first_entry = true
+    for child in rt.children
+      if is_first_entry
+        is_first_entry = false
+      else
+        print(io, ",")
+      end
+      print(io, "\n  ")
+      print(io, replace(repr(child; context = io), "\n" => "\n  "))
+    end
+    print(io, "]")
+  end
+  print(io, ")")
+end
+
+Base.:(==)(rt0::ReductionTree, rt1::ReductionTree) =
+  rt0.out_index == rt1.out_index &&
+  rt0.threaded == rt1.threaded &&
+  rt0.in_indexes == rt1.in_indexes &&
+  rt0.children == rt1.children
+
+"""
+    reduce(step, combine, rt, init, parameters, out,
+      buffer = similar(out, (size(out)..., get_last_out_index(rt))))
+
+Perform reduction according to `ReductionTree` rt.
+
+`size(buffer)` should be equal to `(size(out)..., get_last_out_index(rt))`.
+
+`combine(buffer_slice, new_result)` should be a mutating function that accumulates `new_result` into `buffer_slice`. It could e.g. be defined as
+`buffer_slice .+= new_result`. Calling `combine` on the same `buffer_slice`
+with multiple `new_result`s should yield (roughly) the same result, independent
+of the order in which the calls are made.
+
+`step(buffer_slice, p, thread_index)` should be a mutating closure that takes
+any value `p` from `parameters`, does any arbitrary computation on it to produce
+a `new_result`, and then accumulates that into `buffer_slice` just like
+`combine`. I.e., for an arbitrary function `f`, it could be defined as follows:
+    new_result = f(p, thread_index)
+    combine(buffer_slice, new_result)
+
+!!! note
+    The reason `step` is used instead of passing `f` directly is that there may
+    be efficient ways to perform `f` and `combine` in one go.
+
+A `buffer_slice` in the above will either be `out` or a slice of `buffer` with
+the same shape as `out`, as selected by the `out_index` of the `ReductionTree`
+node.
+
+Buffer slices (but not `out`) will always be initialized to `init` before any
+accumulation steps are performed.
+
+TODO: Documentation about `thread_index`
+
+The end result is the full reduction over all `parameters` and will be saved
+into `out`.
+"""
+function Base.reduce(step::Function, combine::Function, rt::ReductionTree,
+    init, parameters::AbstractArray, out::AbstractArray, buffer::AbstractArray =
+      similar(out, (size(out)..., get_last_out_index(rt))))
+  # Avoid views and construct arrays to the underlying data if it is safe to do
+  # so, because it allows for better optimization.
+  avoid_views = buffer isa Array && isbitstype(eltype(buffer))
+  get_buffer_slice(index) = unsafe_wrap(Array,
+    pointer(buffer, length(out) * (index - 1) + 1), size(out))
+  colons = ntuple(_ -> (:), ndims(out))
+  get_buffer_view(index) = @inbounds view(buffer, colons..., index)
+
+  GC.@preserve buffer @inbounds for child in rt.children
+    slice = (avoid_views ? get_buffer_slice : get_buffer_view)(child.out_index)
+    slice .= init
+    reduce(step, combine, child, init, parameters, slice, buffer)
+    combine(out, slice)
+  end
+
+  @inbounds for in_index in rt.in_indexes
+    step(out, parameters[in_index], 1)
+  end
+
+  return out
 end
 
 # Helper function to copy one set of array elements onto a set of another

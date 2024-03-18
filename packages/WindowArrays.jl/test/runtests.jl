@@ -6,11 +6,12 @@ Random.seed!(0)
 
 function test_numerical_multiplication_accuracy(;
     t = Float32, tw = widen(t), n = 1000, m = 100, k = 10000, seed = 0,
-    err = (x, y) -> sqrt(sum(abs2.(x .- y)) / max(length(x), length(y))))
+    err = (x, y) -> sqrt(sum(abs2.(x .- y)) / max(length(x), length(y))),
+    kw...)
   isnothing(seed) || Random.seed!(seed)
   is = sort!(rand(1 : 1 + k - m, n))
   v = rand(t, k)
-  a = mul_prepare(WindowMatrix(v, is, m))
+  a = mul_prepare(WindowMatrix(v, is, m); kw...)
   x0 = rand(t, m); b0 = a * x0
   x1 = rand(t, n); b1 = a' * x1
   amw = Matrix{tw}(undef, n, m); amw .= a

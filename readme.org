@@ -84,12 +84,12 @@ intense bandpass-filtering or the usage of an analytical signal made the real
 difference here, though.
 
 ** To-do list
-- TODO: In ~classifiers-0~, parallelization was only employed at the level of
-  cross-validation, hyperparameter search, and evaluating multiple distinct
-  datasets at once. As the model is now meant to be used in online BCI contexts
-  where a single classifier has to be trained swiftly on a single take set,
-  parallelization at a lower level (either the regression algorithm or the
-  matrix multiplications) would be prudent.
-- TODO: In case I implement a parallel matrix multiplication, I will be able to
-  do the summation in a better way. Change the remarks in ~tutorial.jl~
-  accordingly.
+- TODO: Make ~Base.reduce(…, ::ReductionTree, …)~ honor multithreading
+- TODO: Formulate ~LinearAlgebra.mul!(…, Adjoint{WindowMatrix}, …)~ in terms of
+  ~Base.reduce(…, ::ReductionTree, …)~
+- TODO: Do some profiling and tweaking on ~lucille~
+- TODO: Finish ~packages/WindowArrays.jl/test/runtests.jl~ with new numerics
+  bounds
+- TODO: Change the remarks in ~tutorial.jl~ accordingly
+- TODO: Look for any open to-do marks in the code that would be prudent to
+  finish
