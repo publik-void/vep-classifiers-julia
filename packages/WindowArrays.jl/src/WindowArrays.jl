@@ -8,9 +8,9 @@ using FFTW: plan_fft, plan_fft!, plan_rfft, plan_bfft!, plan_brfft,
   FFTW.ESTIMATE, FFTW.MEASURE
 using AbstractFFTs: AbstractFFTs.Plan
 using ThreadSafeDicts: ThreadSafeDict
-using Base.Threads: nthreads
 using LinearAlgebra: Adjoint, Transpose
 import LinearAlgebra
+import Base.Threads
 # import Statistics
 
 export
@@ -23,6 +23,42 @@ export
   mul_prepare,
   BiasArray,
   BiasMatrix
+
+global const n_threads = Ref{Float64}(-1.)
+
+"""
+    WindowArrays.num_threads()
+
+Returns the currently configured reference number of threads for array
+operations on `AbstractWindowArray`s.
+
+Also see the documentation for the one-argument version.
+"""
+function num_threads()
+  x = n_threads[]
+  return (isnan(x) || signbit(x)) ? convert(Float64, Threads.nthreads()) : x
+end
+
+"""
+    WindowArrays.num_threads(x::Real)
+
+Sets the reference number of threads for array operations on
+`AbstractWindowArray`s. If `x` is negative or NaN, `Threads.nthreads()` will
+be used. This is also the intial default state.
+
+!!! note
+    This number only serves as a reference to determine the actual number of
+    asynchronous tasks to be used during an operation. It is a `Float64` and
+    can be set to non-integer values. To guarantee single-threaded operation,
+    set it to zero.
+
+Returns `WindowArrays.num_threads()`.
+"""
+function num_threads(x::Real)
+  _x = convert(Float64, x)
+  n_threads[] = (isnan(_x) || signbit(_x)) ? -1. : _x
+  return num_threads()
+end
 
 abstract type AbstractWindowArray{T, N} <: AbstractArray{T, N} end
 
@@ -684,8 +720,8 @@ end
 @inline function LinearAlgebra.mul!(
     c::AbstractVector{<:Number}, a::Ad, b::AbstractVector{<:Number},
     α::Number, β::Number;
-    fanout::Real = 16, n_threads::Real = 1.,
-    threading_granularity_factor::Real = -.5) where {
+    fanout::Real = 16, n_threads::Real = num_threads(),
+    threading_granularity_factor::Real = -.25) where {
       WM <: WindowMatrix{<:Number, <:Any, <:Any, <:Any, Nothing},
       Ad <: Union{<:Adjoint{<:Number, WM}, <:Transpose{<:Number, WM}}}
   is_transpose = Ad <: Transpose
@@ -710,13 +746,13 @@ end
 struct ReductionTree{I <: Integer}
   in_indexes::UnitRange{I}
   out_index::Int
-  threaded::Bool
+  task_index::Int
   children::Vector{ReductionTree{I}}
 
   ReductionTree{I}(in_indexes::AbstractUnitRange, out_index::Int = 0,
-      threaded::Bool = false, children = ReductionTree{I}[]
+      task_index::Int = 1, children = ReductionTree{I}[]
       ) where {I <: Integer} =
-    new{I}(convert(UnitRange{I}, in_indexes), out_index, threaded,
+    new{I}(convert(UnitRange{I}, in_indexes), out_index, task_index,
       children isa Vector{ReductionTree{I}} ?
         children : ReductionTree{I}[children...])
 end
@@ -725,14 +761,15 @@ ReductionTree(in_indexes::AbstractUnitRange{I}, args...) where {I <: Integer} =
   ReductionTree{I}(in_indexes, args...)
 
 function ReductionTree(fanout::Real, in_indexes::AbstractUnitRange{<:Integer},
-    n_threads::Real = 1., threading_granularity_factor::Real = 0.,
-    out_index::Int = 0, next_out_index::Int = 1, n::Int = length(in_indexes))
+    n_threads::Real = num_threads(), threading_granularity_factor::Real = 0.,
+    out_index::Int = 0, next_out_index::Int = 1, task_index::Int = 1,
+    n::Int = length(in_indexes))
   I = eltype(in_indexes)
   n_threads *= fanout ^ threading_granularity_factor
   use_threading = n_threads > 1
 
   if n ≤ fanout
-    return ReductionTree(in_indexes, out_index, use_threading)
+    return ReductionTree(in_indexes, out_index, task_index)
   else
     n_sublevels = floor(log(fanout, n - 1))
     balanced = true
@@ -748,7 +785,7 @@ function ReductionTree(fanout::Real, in_indexes::AbstractUnitRange{<:Integer},
         n_threads - threads_per_partition * (n_partitions - 1)
     end
 
-    rt = ReductionTree{I}(true:false, out_index, use_threading,
+    rt = ReductionTree{I}(true:false, out_index, task_index,
       Vector{ReductionTree{I}}(undef, n_partitions))
     next_next_out_index = next_out_index + (use_threading ? n_partitions : 1)
     for (i, partition_start_index) in enumerate(partition_start_indexes)
@@ -766,17 +803,21 @@ function ReductionTree(fanout::Real, in_indexes::AbstractUnitRange{<:Integer},
       rt.children[i] = ReductionTree(fanout, partition_in_indexes,
         next_n_threads, zero(threading_granularity_factor),
         use_threading ? next_out_index + i - 1 : next_out_index,
-        next_next_out_index, partition_n)
+        next_next_out_index, task_index, partition_n)
       if use_threading
-        next_next_out_index = get_last_out_index(rt.children[i]) + 1
+        last_child = get_last_child(rt.children[i])
+        next_next_out_index = last_child.out_index + 1
+        task_index = last_child.task_index + 1
       end
     end
     return rt
   end
 end
 
-get_last_out_index(rt::ReductionTree) =
-  isempty(rt.children) ? rt.out_index : get_last_out_index(last(rt.children))
+get_last_child(rt::ReductionTree) =
+  isempty(rt.children) ? rt : get_last_child(last(rt.children))
+get_last_out_index(rt::ReductionTree) = get_last_child(rt).out_index
+get_last_task_index(rt::ReductionTree) = get_last_child(rt).task_index
 
 function Base.show(io::IO, rt::ReductionTree)
   show(io, typeof(rt))
@@ -785,7 +826,7 @@ function Base.show(io::IO, rt::ReductionTree)
   print(io, ", ")
   show(io, rt.out_index)
   print(io, ", ")
-  show(io, rt.threaded)
+  show(io, rt.task_index)
   print(io, ", ")
   if get(io, :compact, false)
     show(io, rt.children)
@@ -809,7 +850,7 @@ end
 
 Base.:(==)(rt0::ReductionTree, rt1::ReductionTree) =
   rt0.out_index == rt1.out_index &&
-  rt0.threaded == rt1.threaded &&
+  rt0.task_index == rt1.task_index &&
   rt0.in_indexes == rt1.in_indexes &&
   rt0.children == rt1.children
 
@@ -826,11 +867,11 @@ Perform reduction according to `ReductionTree` rt.
 with multiple `new_result`s should yield (roughly) the same result, independent
 of the order in which the calls are made.
 
-`step(buffer_slice, p, thread_index)` should be a mutating closure that takes
-any value `p` from `parameters`, does any arbitrary computation on it to produce
-a `new_result`, and then accumulates that into `buffer_slice` just like
-`combine`. I.e., for an arbitrary function `f`, it could be defined as follows:
-    new_result = f(p, thread_index)
+`step(buffer_slice, p, task_index)` should be a mutating closure that takes any
+value `p` from `parameters`, does any arbitrary computation on it to produce a
+`new_result`, and then accumulates that into `buffer_slice` just like `combine`.
+I.e., for an arbitrary function `f`, it could be defined as follows:
+    new_result = f(p, task_index)
     combine(buffer_slice, new_result)
 
 !!! note
@@ -844,7 +885,12 @@ node.
 Buffer slices (but not `out`) will always be initialized to `init` before any
 accumulation steps are performed.
 
-TODO: Documentation about `thread_index`
+The `task_index` passed to `step` identifies the `Task` that is running the
+function call. The following properties hold:
+* No two concurrently running tasks will pass the same `task_index` to `step`.
+* `task_index` will be an `Integer` between 1 and the total number of tasks
+  invoked during the `reduce` call. This number can be obtained by calling
+  `get_last_task_index(rt)`.
 
 The end result is the full reduction over all `parameters` and will be saved
 into `out`.
@@ -859,16 +905,33 @@ function Base.reduce(step::Function, combine::Function, rt::ReductionTree,
     pointer(buffer, length(out) * (index - 1) + 1), size(out))
   colons = ntuple(_ -> (:), ndims(out))
   get_buffer_view(index) = @inbounds view(buffer, colons..., index)
+  get_slice = avoid_views ? get_buffer_slice : get_buffer_view
 
-  GC.@preserve buffer @inbounds for child in rt.children
-    slice = (avoid_views ? get_buffer_slice : get_buffer_view)(child.out_index)
+  make_closure(child) = function()
+    slice = get_slice(child.out_index)
     slice .= init
-    reduce(step, combine, child, init, parameters, slice, buffer)
-    combine(out, slice)
+    return reduce(step, combine, child, init, parameters, slice, buffer)
+  end
+
+  GC.@preserve buffer begin
+    tasks = [let t = Task(make_closure(child))
+        t.sticky = false
+        schedule(t)
+      end for child in rt.children if child.task_index ≠ rt.task_index]
+
+    for child in rt.children
+      if child.task_index == rt.task_index
+        combine(out, make_closure(child)())
+      end
+    end
+
+    for task in tasks
+      combine(out, fetch(task))
+    end
   end
 
   @inbounds for in_index in rt.in_indexes
-    step(out, parameters[in_index], 1)
+    step(out, parameters[in_index], rt.task_index)
   end
 
   return out

@@ -84,11 +84,9 @@ intense bandpass-filtering or the usage of an analytical signal made the real
 difference here, though.
 
 ** To-do list
-- TODO: Make ~Base.reduce(…, ::ReductionTree, …)~ honor multithreading
 - TODO: Formulate ~LinearAlgebra.mul!(…, Adjoint{WindowMatrix}, …)~ in terms of
-  ~Base.reduce(…, ::ReductionTree, …)~
-- TODO: Add multithreading defaults to the `WindowArrays` module and the
-  `WindowMatrix` type.
+  ~Base.reduce(…, ::ReductionTree, …)~. ~WindowMatrixMulPreparation~
+  preallocated buffers need to support multithreading for this.
 - TODO: Do some profiling and tweaking on ~lucille~
 - TODO: Finish ~packages/WindowArrays.jl/test/runtests.jl~ with new numerics
   bounds
