@@ -60,6 +60,229 @@ function num_threads(x::Real)
   return num_threads()
 end
 
+# Helper type to partition reductions into tree structures
+struct ReductionTree{I <: Integer}
+  in_indexes::UnitRange{I}
+  out_index::Int
+  task_index::Int
+  children::Vector{ReductionTree{I}}
+
+  ReductionTree{I}(in_indexes::AbstractUnitRange, out_index::Int = 0,
+      task_index::Int = 1, children = ReductionTree{I}[]
+      ) where {I <: Integer} =
+    new{I}(convert(UnitRange{I}, in_indexes), out_index, task_index,
+      children isa Vector{ReductionTree{I}} ?
+        children : ReductionTree{I}[children...])
+end
+
+ReductionTree(in_indexes::AbstractUnitRange{I}, args...) where {I <: Integer} =
+  ReductionTree{I}(in_indexes, args...)
+
+function ReductionTree(fanout::Real, in_indexes::AbstractUnitRange{<:Integer},
+    n_threads::Real = num_threads(), threading_granularity_factor::Real = 0.,
+    out_index::Int = 0, next_out_index::Int = 1, task_index::Int = 1,
+    n::Int = length(in_indexes))
+  I = eltype(in_indexes)
+  n_threads *= fanout ^ threading_granularity_factor
+  use_threading = n_threads > 1
+
+  if n ≤ fanout
+    return ReductionTree(in_indexes, out_index, task_index)
+  else
+    n_sublevels = floor(log(fanout, n - 1))
+    balanced = true
+    partition_size = convert(I, ceil(balanced ?
+      n / ceil(n / fanout ^ n_sublevels) : fanout ^ n_sublevels))
+    n_partitions = ((length(in_indexes) - 1) ÷ partition_size) + 1
+    first_partition_end_index =
+      last(in_indexes) - partition_size * (n_partitions - 1)
+    partition_end_indexes =
+      first_partition_end_index : partition_size : last(in_indexes)
+
+    if use_threading
+      threads_per_partition = ceil(n_threads / n_partitions)
+      threads_for_first_partition = balanced ? threads_per_partition :
+        n_threads - threads_per_partition * (n_partitions - 1)
+    end
+
+    rt = ReductionTree{I}(true:false, out_index, task_index,
+      Vector{ReductionTree{I}}(undef, n_partitions))
+    next_next_out_index = next_out_index + (use_threading ? n_partitions : 1)
+    for (i, partition_end_index) in enumerate(partition_end_indexes)
+      if i > 1
+        partition_in_indexes = (partition_end_index - partition_size + one(I) :
+          partition_end_index)
+        partition_n = convert(Int, partition_size)
+        next_n_threads = use_threading ? threads_per_partition : one(n_threads)
+      else
+        partition_in_indexes = first(in_indexes) : partition_end_index
+        partition_n = length(partition_in_indexes)
+        next_n_threads =
+          use_threading ? threads_for_first_partition : one(n_threads)
+      end
+      rt.children[i] = ReductionTree(fanout, partition_in_indexes,
+        next_n_threads, zero(threading_granularity_factor),
+        use_threading ? next_out_index + i - 1 : next_out_index,
+        next_next_out_index, task_index, partition_n)
+      if use_threading
+        last_child = get_last_child(rt.children[i])
+        next_next_out_index = last_child.out_index + 1
+        task_index = last_child.task_index + 1
+      end
+    end
+    return rt
+  end
+end
+
+Base.eltype(rt::ReductionTree) = eltype(rt.in_indexes)
+
+get_last_child(rt::ReductionTree) =
+  isempty(rt.children) ? rt : get_last_child(last(rt.children))
+get_last_out_index(rt::ReductionTree) = get_last_child(rt).out_index
+get_last_task_index(rt::ReductionTree) = get_last_child(rt).task_index
+
+function Base.show(io::IO, rt::ReductionTree)
+  show(io, typeof(rt))
+  print(io, "(")
+  show(io, rt.in_indexes)
+  print(io, ", ")
+  show(io, rt.out_index)
+  print(io, ", ")
+  show(io, rt.task_index)
+  print(io, ", ")
+  if get(io, :compact, false)
+    show(io, rt.children)
+  else
+    show(io, eltype(rt.children))
+    print(io, "[")
+    is_first_entry = true
+    for child in rt.children
+      if is_first_entry
+        is_first_entry = false
+      else
+        print(io, ",")
+      end
+      print(io, "\n  ")
+      print(io, replace(repr(child; context = io), "\n" => "\n  "))
+    end
+    print(io, "]")
+  end
+  print(io, ")")
+end
+
+Base.:(==)(rt0::ReductionTree, rt1::ReductionTree) =
+  rt0.out_index == rt1.out_index &&
+  rt0.task_index == rt1.task_index &&
+  rt0.in_indexes == rt1.in_indexes &&
+  rt0.children == rt1.children
+
+"""
+    reduce(step, combine, rt, init, parameters, out,
+      buffer = similar(out, (size(out)..., get_last_out_index(rt))))
+
+Perform reduction according to `ReductionTree` rt.
+
+`size(buffer)` should be equal to `(size(out)..., get_last_out_index(rt))`.
+
+`combine(buffer_slice, new_result)` should be a mutating function that accumulates `new_result` into `buffer_slice`. It could e.g. be defined as
+`buffer_slice .+= new_result`. Calling `combine` on the same `buffer_slice`
+with multiple `new_result`s should yield (roughly) the same result, independent
+of the order in which the calls are made.
+
+`step(buffer_slice, p, task_index)` should be a mutating closure that takes any
+value `p` from `parameters`, does any arbitrary computation on it to produce a
+`new_result`, and then accumulates that into `buffer_slice` just like `combine`.
+I.e., for an arbitrary function `f`, it could be defined as follows:
+    new_result = f(p, task_index)
+    combine(buffer_slice, new_result)
+
+!!! note
+    The reason `step` is used instead of passing `f` directly is that there may
+    be efficient ways to perform `f` and `combine` in one go.
+
+A `buffer_slice` in the above will either be `out` or a slice of `buffer` with
+the same shape as `out`, as selected by the `out_index` of the `ReductionTree`
+node.
+
+Buffer slices (but not `out`) will always be initialized to `init` before any
+accumulation steps are performed.
+
+The `task_index` passed to `step` identifies the `Task` that is running the
+function call. The following properties hold:
+* No two concurrently running tasks will pass the same `task_index` to `step`.
+* `task_index` will be an `Integer` between 1 and the total number of tasks
+  invoked during the `reduce` call. This number can be obtained by calling
+  `get_last_task_index(rt)`.
+
+The end result is the full reduction over all `parameters` and will be saved
+into `out`.
+"""
+function Base.reduce(step::Function, combine::Function, rt::ReductionTree,
+    init, parameters::AbstractArray, out::AbstractArray, buffer::AbstractArray =
+      similar(out, (size(out)..., get_last_out_index(rt))))
+  # Avoid views and construct arrays to the underlying data if it is safe to do
+  # so, because it allows for better optimization.
+  colons = ntuple(_ -> (:), ndims(out))
+
+  GC.@preserve buffer begin
+    make_closure(child) = function()
+        slice = unsafe_slice(buffer, (colons..., child.out_index))
+        slice .= init
+        return reduce(step, combine, child, init, parameters, slice, buffer)
+    end
+
+    tasks = [let t = Task(make_closure(child))
+        t.sticky = false
+        schedule(t)
+      end for child in rt.children if child.task_index ≠ rt.task_index]
+
+    for child in rt.children
+      if child.task_index == rt.task_index
+        combine(out, make_closure(child)())
+      end
+    end
+
+    for task in tasks
+      combine(out, fetch(task))
+    end
+  end
+
+  @inbounds for in_index in rt.in_indexes
+    step(out, parameters[in_index], rt.task_index)
+  end
+
+  return out
+end
+
+# Helper function to avoid some of the performance deficits of `view`s
+@inline function unsafe_slice(a::A, args::Ts
+    ) where {N, T, A <: AbstractArray{T, N}, Ts <: Tuple}
+  wrap(a, index, size) = unsafe_wrap(Array, pointer(a, index), size)
+
+  if A <: Array && isbitstype(T)
+    # TODO: Cases are not at all exhaustive. Ths function could be put somewhere
+    # else entirely and made a lot more general. Or maybe `view`s will perform
+    # better in the future.
+    if Ts <: Tuple{<:AbstractUnitRange}
+      r0, = args
+      return wrap(a, first(r0), length(r0))
+    elseif Ts <: Tuple{<:AbstractUnitRange, Int}
+      r0, i1 = args
+      return wrap(a, first(r0) + (i1 - 1) * prod(Base.front(size(a))),
+        length(r0))
+    elseif Ts <: Tuple{Colon, Int}
+      c0, i1 = args
+      return wrap(a, 1 + (i1 - 1) * prod(Base.front(size(a))),
+        Base.front(size(a)))
+    elseif Ts <: Tuple{Colon, <:AbstractUnitRange}
+      c0, r1 = args
+      return wrap(a, 1 + (i1 - 1) * prod(Base.front(size(a))),
+        (Base.front(size(a)), length(r1)))
+    end
+  end
+  return @inbounds view(a, args...)
+end
+
 abstract type AbstractWindowArray{T, N} <: AbstractArray{T, N} end
 
 "Precomputed data for efficient `LinearAlgebra.mul!(_::AbstractVector,
@@ -67,33 +290,28 @@ _::WindowMatrix, _::AbstractVector, _, _)` and
 LinearAlgebra.mul!(_::AbstractVector, _::LinearAlgebra.Adjoint{T,
 <:WindowMatrix}, _::AbstractVector, _, _) where {T}`"
 struct WindowMatrixMulPreparation{T,
-  WS<:AbstractMatrix{<:Number},
-  ISS<:AbstractArray,
-  BP<:Union{Nothing, <:Plan, <:AbstractMatrix{<:Number}},
-  BRP<:Union{Nothing, <:Plan, <:AbstractMatrix{<:Number}},
-  IP<:Union{Nothing, <:Plan, <:AbstractMatrix{<:Number}},
-  IRP<:Union{Nothing, <:Plan, <:AbstractMatrix{<:Number}},
-  BUF<:AbstractArray{<:Number},
-  RBUF<:AbstractArray{<:Real}}
+  WS <: AbstractMatrix{<:Number},
+  ISS <: AbstractArray,
+  BP <: Union{Nothing, <:Plan, <:AbstractMatrix{<:Number}},
+  BRP <: Union{Nothing, <:Plan, <:AbstractMatrix{<:Number}},
+  IP <: Union{Nothing, <:Plan, <:AbstractMatrix{<:Number}},
+  IRP <: Union{Nothing, <:Plan, <:AbstractMatrix{<:Number}},
+  I <: Integer}
   ws::WS
   iss::ISS
   bp::BP
   brp::BRP
   ip::IP
   irp::IRP
-  buf::BUF   # Note: `buf` and `rbuf` get mutated during `mul!`, thus breaking
-  rbuf::RBUF # thread safety.
+  rt::ReductionTree{I}
+  n::Int
   k::Int
-
-  # TODO: Is there a nicer way to formulate this constructor?
-  function WindowMatrixMulPreparation(type, ws, iss, bp, brp, ip, irp, buf,
-      rbuf, k)
-    return new{type,
-               typeof(ws), typeof(iss), typeof(bp), typeof(brp), typeof(ip),
-               typeof(irp), typeof(buf), typeof(rbuf)}(
-             ws, iss, bp, brp, ip, irp, buf, rbuf, k)
-  end
 end
+
+WindowMatrixMulPreparation{T}(ws, iss, bp, brp, ip, irp, rt, n, k
+  ) where {T} = WindowMatrixMulPreparation{T,
+      map(typeof, (ws, iss, bp, brp, ip, irp))..., eltype(rt)}(
+    ws, iss, bp, brp, ip, irp, rt, n, k)
 
 # TODO: There is an implicit requirement for one-based indexing of `a.v` and
 # `a.i` of a `WindowMatrix` `a`. Either make it explicit or re-write the code
@@ -252,7 +470,7 @@ function colwise_fft!(p::Plan, a::AbstractMatrix{<:Number})
 end
 
 function colwise_fft(p::Plan, a::AbstractMatrix{<:Number})
-  return hcat([p * view(a, :, i) for i in axes(a, 2)]...)
+  return hcat((p * view(a, :, i) for i in axes(a, 2))...)
 end
 
 fft_plan_cache =
@@ -362,6 +580,8 @@ end
 # multiplication produces faulty results. If it gets fixed at some point in the
 # future, it should be enabled by default again. And the note in the docstring
 # should be removed.
+# TODO: This function should probably be broken down into smaller parts
+# TODO: Type stability
 """
     mul_prepare(a, matvec = Val(true), adjvec = Val(false), \
       return_plans = Val(false); kwargs...)
@@ -408,6 +628,11 @@ function mul_prepare(a::WindowMatrix{T},
     ::Val{return_plans} = Val(false);
     # TODO: Improve heuristics for the payload sizes?
     matvec_minimal_payload_size = 9a.k, adjvec_minimal_payload_size = 3a.k,
+    fanout = 16, n_threads = num_threads(), threading_granularity_factor = 0.,
+    matvec_fanout = fanout, adjvec_fanout = fanout,
+    matvec_n_threads = n_threads, adjvec_n_threads = n_threads,
+    matvec_threading_granularity_factor = threading_granularity_factor,
+    adjvec_threading_granularity_factor = threading_granularity_factor,
     flags = ESTIMATE, mul_flags = flags,
     bp_flags = mul_flags, brp_flags = mul_flags, ip_flags = mul_flags,
     irp_flags = mul_flags, wp_flags = flags,
@@ -430,7 +655,7 @@ function mul_prepare(a::WindowMatrix{T},
     ai_is_sorted = issorted(a.i), gfpv_flags = 0b0
     ) where {T <: Number, matvec, adjvec, return_plans}
   is_complex = T <: Complex
-  CT = is_complex ? T : Complex{T}
+  CT = complex(T)
 
   @assert !(matvec_type == Real && is_complex) "`rfft` requested for complexes."
   @assert !(adjvec_type == Real && is_complex) "`rfft` requested for complexes."
@@ -445,10 +670,11 @@ function mul_prepare(a::WindowMatrix{T},
   if matvec
     if length(a) == 0
       k = 0
+      n = a.k
       ws = Matrix{T}(undef, 0, 0)
       iss = []
-      buf = Vector{CT}(undef, a.k)
-      rbuf = Vector{real(CT)}(undef, a.k)
+      buf = Vector{CT}(undef, n)
+      rbuf = Vector{real(CT)}(undef, n)
       kp = Matrix{T}(undef, 0, a.k)
       isnothing(matvec_bp)  && matvec_plan_bp  && (matvec_bp  = kp)
       isnothing(matvec_brp) && matvec_plan_brp && (matvec_brp = kp)
@@ -513,8 +739,10 @@ function mul_prepare(a::WindowMatrix{T},
       isnothing(matvec_irp) && matvec_plan_irp && (matvec_irp = _plan_brfft(
         irbuf, n; flags = matvec_irp_flags, verbosity_flags = gfpv_flags))
     end
-    mp = WindowMatrixMulPreparation(matvec_type, ws, iss,
-      matvec_bp, matvec_brp, matvec_ip, matvec_irp, buf, rbuf, k)
+    rt = ReductionTree(matvec_fanout, axes(ws, 2), matvec_n_threads,
+      matvec_threading_granularity_factor)
+    mp = WindowMatrixMulPreparation{matvec_type}(ws, iss,
+      matvec_bp, matvec_brp, matvec_ip, matvec_irp, rt, n, k)
     matvec_plans = ((matvec_bp, matvec_brp, matvec_ip, matvec_irp, matvec_wp),)
   else
     mp = a.mp
@@ -524,6 +752,7 @@ function mul_prepare(a::WindowMatrix{T},
   if adjvec
     if length(a) == 0
       k = 0
+      n = 0
       ws = Matrix{T}(undef, 0, 0)
       iss = []
       buf = Vector{CT}(undef, 0)
@@ -586,68 +815,76 @@ function mul_prepare(a::WindowMatrix{T},
         irbuf, n; flags = adjvec_irp_flags, verbosity_flags = gfpv_flags))
     end
 
-    mpa = WindowMatrixMulPreparation(adjvec_type, ws, iss,
-      adjvec_bp, adjvec_brp, adjvec_ip, adjvec_irp, buf, rbuf, k)
+    rt = ReductionTree(adjvec_fanout, axes(ws, 2), adjvec_n_threads,
+      adjvec_threading_granularity_factor)
+    mpa = WindowMatrixMulPreparation{adjvec_type}(ws, iss,
+      adjvec_bp, adjvec_brp, adjvec_ip, adjvec_irp, rt, n, k)
     adjvec_plans = ((adjvec_bp, adjvec_brp, adjvec_ip, adjvec_irp, adjvec_wp),)
   else
     mpa = a.mpa
     adjvec_plans = ()
   end
 
-  if return_plans
-    return (WindowMatrix(a.v, a.i, a.k, mp, mpa),
-            matvec_plans..., adjvec_plans...)
-  else
-    return WindowMatrix(a.v, a.i, a.k, mp, mpa)
-  end
+  a_mp = WindowMatrix(a.v, a.i, a.k, mp, mpa)
+  return return_plans ? (a_mp, matvec_plans..., adjvec_plans...) : a_mp
 end
 
 # `mul!` computes c <- a b α + c β
 
 # TODO: Re-profile performance in comparison to BLAS with only 1 thread, and
 # perhaps on lucille?
-# TODO: Add multi-threaded multiplication capabilities? That is, several threads
-# doing a single `mul!`, and by extension, thread-safe single-thread `mul!`.
 
 @inline function LinearAlgebra.mul!(
     c::AbstractVector{<:Number},
-    a::WindowMatrix{A, <:Any, <:Any, MP},
-    b::AbstractVector{B},
-    α::Number, β::Number) where {A<:Number, B<:Number,
-                                 MP<:WindowMatrixMulPreparation}
-  # Profiling results with FFTW.MEASURE compared to BLAS on one thread, using
-  # feature matrix for S5, BPSK45, and running `a * b`:
-  # On lucille (ppc64le) for A, B = Float32:    ~1.9x faster, but allocates
-  # On lucille (ppc64le) for A, B = Float64:    ~1.4x faster, but allocates
-  # On lucille (ppc64le) for A, B = ComplexF32: ~3.7x faster
-  # On lucille (ppc64le) for A, B = ComplexF64: ~2.1x faster
+    a::WindowMatrix{<:Number, <:Any, <:Any, <:WindowMatrixMulPreparation},
+    b::AbstractVector{<:Number},
+    α::Number, β::Number)
+  ((size(c, 1), size(b, 1)) == size(a) && size(c, 2) == size(b, 2)) ||
+    throw(DimensionMismatch("Cannot multiply matrix of size $(size(a)) with \
+    matrix of size $(size(b)) to yield a result size of $(size(c))"))
 
-  inputs_are_real = A <: Real && B <: Real            # Separate methods would
-  mp_is_real = MP <: WindowMatrixMulPreparation{Real} # mean code duplication.
+  inputs_are_real = eltype(a) <: Real && eltype(b) <: Real
+  mp_is_real = a.mp isa WindowMatrixMulPreparation{Real}
+  n_tasks = get_last_task_index(a.mp.rt)
+
+  buf = Array{complex(eltype(a))}(undef, a.mp.n, n_tasks)
+
   c .*= β
 
-  dft_b_buf = inputs_are_real ? a.mp.rbuf : a.mp.buf
-  @inbounds view(dft_b_buf, 1:a.k) .= b
+  dft_b_buf = inputs_are_real ? Array{real(eltype(a))}(undef, a.mp.n) :
+    view(buf, :, 1)
+  @inbounds view(dft_b_buf, Base.OneTo(a.k)) .= b
   @inbounds view(dft_b_buf, a.k + 1 : length(dft_b_buf)) .=
     zero(eltype(dft_b_buf))
   dft_b = (inputs_are_real ? a.mp.brp : a.mp.bp) * dft_b_buf
 
-  @inbounds for i in axes(a.mp.ws, 2)
-    # Note: Dead branches should be optimized away by the compiler here.
-    if inputs_are_real
-      view(a.mp.buf, 1:a.mp.k) .= dft_b .* view(a.mp.ws, 1:a.mp.k, i)
-      buf = a.mp.irp * view(a.mp.buf, 1:a.mp.k)
-    else
-      if !mp_is_real
-        a.mp.buf .= dft_b .* view(a.mp.ws, :, i)
+  GC.@preserve buf a begin
+    @inline step(c, i, ti) = @inbounds begin
+      slice = unsafe_slice(buf, (:, ti))
+      if inputs_are_real
+        unsafe_slice(slice, (Base.OneTo(a.mp.k),)) .=
+          dft_b .* unsafe_slice(a.mp.ws, (Base.OneTo(a.mp.k), i))
+        partial_result = a.mp.irp * unsafe_slice(slice, (Base.OneTo(a.mp.k),))
       else
-        view(a.mp.buf, 1:a.mp.k) .= view(dft_b, 1:a.mp.k) .* view(a.mp.ws, :, i)
-        view(a.mp.buf, a.mp.k + 1 : length(a.mp.buf)) .= view(dft_b, a.mp.k +
-          1 : length(dft_b)) .* conj.(view(a.mp.ws, a.mp.k - 1 : -1 : 2, i))
+        if !mp_is_real
+          slice .= dft_b .* unsafe_slice(a.mp.ws, (:, i))
+        else
+          unsafe_slice(slice, (Base.OneTo(a.mp.k),)) .= (*).(
+            unsafe_slice(dft_b, (Base.OneTo(a.mp.k),)),
+            unsafe_slice(a.mp.ws, (:, i)))
+          unsafe_slice(slice, (a.mp.k + 1 : a.mp.n,)) .= (*).(
+            unsafe_slice(dft_b, (a.mp.k + 1 : length(dft_b),)),
+            conj.(unsafe_slice(a.mp.ws, (a.mp.k - 1 : -1 : 2, i))))
+        end
+        partial_result = a.mp.ip * slice
       end
-      buf = a.mp.ip * a.mp.buf
+      _copy_els(c, a.mp.iss[i].i, partial_result, a.mp.iss[i].buf_i,
+        (x, y) -> muladd(α, y, x))
     end
-    _copy_els(c, a.mp.iss[i].i, buf, a.mp.iss[i].buf_i, (x, y) -> x + y * α)
+
+    @inline combine(out, in) = out .+= in
+
+    c = reduce(step, combine, a.mp.rt, zero(eltype(c)), axes(a.mp.ws, 2), c)
   end
   return c
 end
@@ -661,61 +898,61 @@ end
 # and their indexes are determined by `a.i`. Only a small portion of the whole
 # convolved signal has to be computed, which is why it should be possible to
 # implement the otherwise large convolution efficiently.
-@inline function LinearAlgebra.mul!(
-    c::AbstractVector{<:Number},
-    a::Ad,
-    b::AbstractVector{B},
-    α::Number, β::Number) where {A<:Number, B<:Number,
-      MPA<:WindowMatrixMulPreparation,
-      Ad<:Union{  <:Adjoint{A, <:WindowMatrix{A, <:Any, <:Any, <:Any, MPA}},
-                <:Transpose{A, <:WindowMatrix{A, <:Any, <:Any, <:Any, MPA}}}}
-  # Profiling results with FFTW.MEASURE compared to BLAS on one thread, using
-  # feature matrix for S5, BPSK45, and running `a * b`:
-  # On lucille (ppc64le) for A, B = Float32:    ~1.2x faster, but bad numerics
-  # On lucille (ppc64le) for A, B = Float64:    ~1.3x slower, and allocates
-  # On lucille (ppc64le) for A, B = ComplexF32: ~1.9x faster, so-so numerics
-  # On lucille (ppc64le) for A, B = ComplexF64: ~1.1x faster
+# @inline function LinearAlgebra.mul!(
+#     c::AbstractVector{<:Number},
+#     a::Ad,
+#     b::AbstractVector{B},
+#     α::Number, β::Number) where {A<:Number, B<:Number,
+#       MPA<:WindowMatrixMulPreparation,
+#       Ad<:Union{  <:Adjoint{A, <:WindowMatrix{A, <:Any, <:Any, <:Any, MPA}},
+#                 <:Transpose{A, <:WindowMatrix{A, <:Any, <:Any, <:Any, MPA}}}}
+#   # Profiling results with FFTW.MEASURE compared to BLAS on one thread, using
+#   # feature matrix for S5, BPSK45, and running `a * b`:
+#   # On lucille (ppc64le) for A, B = Float32:    ~1.2x faster, but bad numerics
+#   # On lucille (ppc64le) for A, B = Float64:    ~1.3x slower, and allocates
+#   # On lucille (ppc64le) for A, B = ComplexF32: ~1.9x faster, so-so numerics
+#   # On lucille (ppc64le) for A, B = ComplexF64: ~1.1x faster
 
-  inputs_are_real = A <: Real && B <: Real              # Separate methods would
-  mpa_is_real = MPA <: WindowMatrixMulPreparation{Real} # mean code duplication.
-  is_transpose = Ad <: Transpose                        #
+#   inputs_are_real = A <: Real && B <: Real
+#   mpa_is_real = MPA <: WindowMatrixMulPreparation{Real}
+#   is_transpose = Ad <: Transpose
 
-  a = a.parent
+#   a = a.parent
 
-  c .*= β
+#   c .*= β
 
-  _buf = inputs_are_real ? a.mpa.rbuf : a.mpa.buf
-  _bp  = inputs_are_real ? a.mpa.brp  : a.mpa.bp
-  _ip  = inputs_are_real ? a.mpa.irp  : a.mpa.ip
+#   _buf = inputs_are_real ? a.mpa.rbuf : a.mpa.buf
+#   _bp  = inputs_are_real ? a.mpa.brp  : a.mpa.bp
+#   _ip  = inputs_are_real ? a.mpa.irp  : a.mpa.ip
 
-  @inbounds for i in axes(a.mpa.ws, 2)
-    # Note: Dead branches should be optimized away by the compiler here.
-    _buf .= zero(eltype(_buf))
-    _copy_els(_buf, a.mpa.iss[i].buf_i, b, a.mpa.iss[i].b_i,
-      is_transpose ? (_, x) -> conj(x) : (_, x) -> x)
+#   @inbounds for i in axes(a.mpa.ws, 2)
+#     # Note: Dead branches should be optimized away by the compiler here.
+#     _buf .= zero(eltype(_buf))
+#     _copy_els(_buf, a.mpa.iss[i].buf_i, b, a.mpa.iss[i].b_i,
+#       is_transpose ? (_, x) -> conj(x) : (_, x) -> x)
 
-    buf = _bp * _buf
-    if inputs_are_real
-      buf .*= view(a.mpa.ws, Base.OneTo(a.mpa.k), i)
-    else
-      if !mpa_is_real
-        buf .*= view(a.mpa.ws, :, i)
-      else
-        view(buf, Base.OneTo(a.mpa.k)) .*= view(a.mpa.ws, :, i)
-        view(buf, a.mpa.k + 1 : length(buf)) .*=
-          conj.(view(a.mpa.ws, a.mpa.k - 1 : -1 : 2, i))
-      end
-    end
-    buf = _ip * buf
+#     buf = _bp * _buf
+#     if inputs_are_real
+#       buf .*= view(a.mpa.ws, Base.OneTo(a.mpa.k), i)
+#     else
+#       if !mpa_is_real
+#         buf .*= view(a.mpa.ws, :, i)
+#       else
+#         view(buf, Base.OneTo(a.mpa.k)) .*= view(a.mpa.ws, :, i)
+#         view(buf, a.mpa.k + 1 : length(buf)) .*=
+#           conj.(view(a.mpa.ws, a.mpa.k - 1 : -1 : 2, i))
+#       end
+#     end
+#     buf = _ip * buf
 
-    if is_transpose
-      c .+= conj.(view(buf, Base.OneTo(a.k))) .* α
-    else
-      c .+= view(buf, Base.OneTo(a.k)) .* α
-    end
-  end
-  return c
-end
+#     if is_transpose
+#       c .+= conj.(view(buf, Base.OneTo(a.k))) .* α
+#     else
+#       c .+= view(buf, Base.OneTo(a.k)) .* α
+#     end
+#   end
+#   return c
+# end
 
 @inline function LinearAlgebra.mul!(
     c::AbstractVector{<:Number}, a::Ad, b::AbstractVector{<:Number},
@@ -724,6 +961,10 @@ end
     threading_granularity_factor::Real = -.25) where {
       WM <: WindowMatrix{<:Number, <:Any, <:Any, <:Any, Nothing},
       Ad <: Union{<:Adjoint{<:Number, WM}, <:Transpose{<:Number, WM}}}
+  ((size(c, 1), size(b, 1)) == size(a) && size(c, 2) == size(b, 2)) ||
+    throw(DimensionMismatch("Cannot multiply matrix of size $(size(a)) with \
+    matrix of size $(size(b)) to yield a result size of $(size(c))"))
+
   is_transpose = Ad <: Transpose
 
   a = a.parent
@@ -740,201 +981,6 @@ end
   @inline combine(c, buf) = c .+= buf
 
   return reduce(step, combine, rt, zero(eltype(c)), parameters, c)
-end
-
-# Helper type to partition reductions into tree structures
-struct ReductionTree{I <: Integer}
-  in_indexes::UnitRange{I}
-  out_index::Int
-  task_index::Int
-  children::Vector{ReductionTree{I}}
-
-  ReductionTree{I}(in_indexes::AbstractUnitRange, out_index::Int = 0,
-      task_index::Int = 1, children = ReductionTree{I}[]
-      ) where {I <: Integer} =
-    new{I}(convert(UnitRange{I}, in_indexes), out_index, task_index,
-      children isa Vector{ReductionTree{I}} ?
-        children : ReductionTree{I}[children...])
-end
-
-ReductionTree(in_indexes::AbstractUnitRange{I}, args...) where {I <: Integer} =
-  ReductionTree{I}(in_indexes, args...)
-
-function ReductionTree(fanout::Real, in_indexes::AbstractUnitRange{<:Integer},
-    n_threads::Real = num_threads(), threading_granularity_factor::Real = 0.,
-    out_index::Int = 0, next_out_index::Int = 1, task_index::Int = 1,
-    n::Int = length(in_indexes))
-  I = eltype(in_indexes)
-  n_threads *= fanout ^ threading_granularity_factor
-  use_threading = n_threads > 1
-
-  if n ≤ fanout
-    return ReductionTree(in_indexes, out_index, task_index)
-  else
-    n_sublevels = floor(log(fanout, n - 1))
-    balanced = true
-    partition_size = convert(I, ceil(balanced ?
-      n / ceil(n / fanout ^ n_sublevels) : fanout ^ n_sublevels))
-    partition_start_indexes =
-      first(in_indexes) : partition_size : last(in_indexes)
-    n_partitions = length(partition_start_indexes)
-
-    if use_threading
-      threads_per_partition = ceil(n_threads / n_partitions)
-      threads_for_last_partition = balanced ? threads_per_partition :
-        n_threads - threads_per_partition * (n_partitions - 1)
-    end
-
-    rt = ReductionTree{I}(true:false, out_index, task_index,
-      Vector{ReductionTree{I}}(undef, n_partitions))
-    next_next_out_index = next_out_index + (use_threading ? n_partitions : 1)
-    for (i, partition_start_index) in enumerate(partition_start_indexes)
-      if i < n_partitions
-        partition_in_indexes = (partition_start_index :
-          partition_start_index + partition_size - one(I))
-        partition_n = convert(Int, partition_size)
-        next_n_threads = use_threading ? threads_per_partition : one(n_threads)
-      else
-        partition_in_indexes = partition_start_index : last(in_indexes)
-        partition_n = length(partition_in_indexes)
-        next_n_threads =
-          use_threading ? threads_for_last_partition : one(n_threads)
-      end
-      rt.children[i] = ReductionTree(fanout, partition_in_indexes,
-        next_n_threads, zero(threading_granularity_factor),
-        use_threading ? next_out_index + i - 1 : next_out_index,
-        next_next_out_index, task_index, partition_n)
-      if use_threading
-        last_child = get_last_child(rt.children[i])
-        next_next_out_index = last_child.out_index + 1
-        task_index = last_child.task_index + 1
-      end
-    end
-    return rt
-  end
-end
-
-get_last_child(rt::ReductionTree) =
-  isempty(rt.children) ? rt : get_last_child(last(rt.children))
-get_last_out_index(rt::ReductionTree) = get_last_child(rt).out_index
-get_last_task_index(rt::ReductionTree) = get_last_child(rt).task_index
-
-function Base.show(io::IO, rt::ReductionTree)
-  show(io, typeof(rt))
-  print(io, "(")
-  show(io, rt.in_indexes)
-  print(io, ", ")
-  show(io, rt.out_index)
-  print(io, ", ")
-  show(io, rt.task_index)
-  print(io, ", ")
-  if get(io, :compact, false)
-    show(io, rt.children)
-  else
-    show(io, eltype(rt.children))
-    print(io, "[")
-    is_first_entry = true
-    for child in rt.children
-      if is_first_entry
-        is_first_entry = false
-      else
-        print(io, ",")
-      end
-      print(io, "\n  ")
-      print(io, replace(repr(child; context = io), "\n" => "\n  "))
-    end
-    print(io, "]")
-  end
-  print(io, ")")
-end
-
-Base.:(==)(rt0::ReductionTree, rt1::ReductionTree) =
-  rt0.out_index == rt1.out_index &&
-  rt0.task_index == rt1.task_index &&
-  rt0.in_indexes == rt1.in_indexes &&
-  rt0.children == rt1.children
-
-"""
-    reduce(step, combine, rt, init, parameters, out,
-      buffer = similar(out, (size(out)..., get_last_out_index(rt))))
-
-Perform reduction according to `ReductionTree` rt.
-
-`size(buffer)` should be equal to `(size(out)..., get_last_out_index(rt))`.
-
-`combine(buffer_slice, new_result)` should be a mutating function that accumulates `new_result` into `buffer_slice`. It could e.g. be defined as
-`buffer_slice .+= new_result`. Calling `combine` on the same `buffer_slice`
-with multiple `new_result`s should yield (roughly) the same result, independent
-of the order in which the calls are made.
-
-`step(buffer_slice, p, task_index)` should be a mutating closure that takes any
-value `p` from `parameters`, does any arbitrary computation on it to produce a
-`new_result`, and then accumulates that into `buffer_slice` just like `combine`.
-I.e., for an arbitrary function `f`, it could be defined as follows:
-    new_result = f(p, task_index)
-    combine(buffer_slice, new_result)
-
-!!! note
-    The reason `step` is used instead of passing `f` directly is that there may
-    be efficient ways to perform `f` and `combine` in one go.
-
-A `buffer_slice` in the above will either be `out` or a slice of `buffer` with
-the same shape as `out`, as selected by the `out_index` of the `ReductionTree`
-node.
-
-Buffer slices (but not `out`) will always be initialized to `init` before any
-accumulation steps are performed.
-
-The `task_index` passed to `step` identifies the `Task` that is running the
-function call. The following properties hold:
-* No two concurrently running tasks will pass the same `task_index` to `step`.
-* `task_index` will be an `Integer` between 1 and the total number of tasks
-  invoked during the `reduce` call. This number can be obtained by calling
-  `get_last_task_index(rt)`.
-
-The end result is the full reduction over all `parameters` and will be saved
-into `out`.
-"""
-function Base.reduce(step::Function, combine::Function, rt::ReductionTree,
-    init, parameters::AbstractArray, out::AbstractArray, buffer::AbstractArray =
-      similar(out, (size(out)..., get_last_out_index(rt))))
-  # Avoid views and construct arrays to the underlying data if it is safe to do
-  # so, because it allows for better optimization.
-  avoid_views = buffer isa Array && isbitstype(eltype(buffer))
-  get_buffer_slice(index) = unsafe_wrap(Array,
-    pointer(buffer, length(out) * (index - 1) + 1), size(out))
-  colons = ntuple(_ -> (:), ndims(out))
-  get_buffer_view(index) = @inbounds view(buffer, colons..., index)
-  get_slice = avoid_views ? get_buffer_slice : get_buffer_view
-
-  make_closure(child) = function()
-    slice = get_slice(child.out_index)
-    slice .= init
-    return reduce(step, combine, child, init, parameters, slice, buffer)
-  end
-
-  GC.@preserve buffer begin
-    tasks = [let t = Task(make_closure(child))
-        t.sticky = false
-        schedule(t)
-      end for child in rt.children if child.task_index ≠ rt.task_index]
-
-    for child in rt.children
-      if child.task_index == rt.task_index
-        combine(out, make_closure(child)())
-      end
-    end
-
-    for task in tasks
-      combine(out, fetch(task))
-    end
-  end
-
-  @inbounds for in_index in rt.in_indexes
-    step(out, parameters[in_index], rt.task_index)
-  end
-
-  return out
 end
 
 # Helper function to copy one set of array elements onto a set of another

@@ -65,12 +65,12 @@ packages.
 
 As we are often interested in the phase of a certain frequency when classifying
 VEPs for BCIs, it may be sensible to make use of
-[[https://en.wikipedia.org/wiki/Analytic_signal][analytical signals]]. As opposed
-to a real-valued signal, an analytical signal is its complex-valued counterpart
-that contains both the amplitude and the phase at every time point. It can be
-computed using the [[https://en.wikipedia.org/wiki/Hilbert_transform][Hilbert
-transform]]. The models contained in this repository support working with
-complex-valued data.
+[[https://en.wikipedia.org/wiki/Analytic_signal][analytical signals]]. As
+opposed to a real-valued signal, an analytical signal is its complex-valued
+counterpart that contains both the amplitude and the phase at every time point.
+It can be computed using the
+[[https://en.wikipedia.org/wiki/Hilbert_transform][Hilbert transform]]. The
+models contained in this repository support working with complex-valued data.
 
 While working on my Master's thesis, I tested this in the following way: I
 filtered the EEG signal with a pretty sharp bandpass at 60Hz, so that not much
@@ -84,12 +84,7 @@ intense bandpass-filtering or the usage of an analytical signal made the real
 difference here, though.
 
 ** To-do list
-- TODO: Formulate ~LinearAlgebra.mul!(…, Adjoint{WindowMatrix}, …)~ in terms of
-  ~Base.reduce(…, ::ReductionTree, …)~. ~WindowMatrixMulPreparation~
-  preallocated buffers need to support multithreading for this.
 - TODO: Do some profiling and tweaking on ~lucille~
-- TODO: Finish ~packages/WindowArrays.jl/test/runtests.jl~ with new numerics
-  bounds
 - TODO: Change the remarks in ~tutorial.jl~ accordingly
 - TODO: Look for any open to-do marks in the code that would be prudent to
   finish

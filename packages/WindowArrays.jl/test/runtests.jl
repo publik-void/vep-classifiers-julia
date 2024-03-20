@@ -5,25 +5,40 @@ import Random
 Random.seed!(0)
 
 function test_numerical_multiplication_accuracy(;
-    t = Float32, tw = widen(t), n = 1000, m = 100, k = 10000, seed = 0,
+    t = Float32, tw = widen(t), n = 10000, m = 1000, k = 100000, seed = 0,
     err = (x, y) -> sqrt(sum(abs2.(x .- y)) / max(length(x), length(y))),
-    kw...)
+    print = false, kw...)
   isnothing(seed) || Random.seed!(seed)
   is = sort!(rand(1 : 1 + k - m, n))
   v = rand(t, k)
   a = mul_prepare(WindowMatrix(v, is, m); kw...)
   x0 = rand(t, m); b0 = a * x0
   x1 = rand(t, n); b1 = a' * x1
-  amw = Matrix{tw}(undef, n, m); amw .= a
-  x0w = convert.(tw, x0); b0w = amw * x0w
-  x1w = convert.(tw, x1); b1w = amw' * x1w
-  return (err(b0, b0w), err(b1, b1w))
+  am = Matrix{t}(undef, n, m); am .= a
+  b0m = am * x0; b1m = am' * x1;
+  x0w = convert.(tw, x0); b0w = am * x0w
+  x1w = convert.(tw, x1); b1w = am' * x1w
+  errs = (err(b0, b0w), err(b0m, b0w), err(b1, b1w), err(b1m, b1w))
+  if print
+    println("Error of $(n)×$(m)-`$(WindowMatrix{t})` times \
+      $(m)-`$(Vector{t})` vs -`$(Vector{tw})`: $(errs[1])")
+    println("Error of $(n)×$(m)-`$(Matrix{t})` times \
+      $(m)-`$(Vector{t})` vs -`$(Vector{tw})`: $(errs[2])")
+    println("Error of $(m)×$(n)-`Adjoint{$(WindowMatrix{t})}` times \
+      $(n)-`$(Vector{t})` vs -`$(Vector{tw})`: $(errs[3])")
+    println("Error of $(m)×$(n)-`Adjoint{$(Matrix{t})}` times \
+      $(n)-`$(Vector{t})` vs -`$(Vector{tw})`: $(errs[4])")
+  end
+  return errs[1] ≤ errs[2] && errs[3] ≤ errs[4]
+  # NOTE: Running a Matrix multiplication `a * x` where `a` has not been widened
+  # and `x` has may produce ever so slightly worse results than if `a` would
+  # have been widened too. The difference is practically negligible and instead,
+  # some memory can be saved.
 end
 
 @testset "numerical multiplication accuracy" for
     t in (Float32, Float64, ComplexF32, ComplexF64)
-  e0, e1 = test_numerical_multiplication_accuracy(; t)
-  println((; t, e0, e1))
+  test_numerical_multiplication_accuracy(; t)
 end
 
 # populate_fft_plan_cache(
