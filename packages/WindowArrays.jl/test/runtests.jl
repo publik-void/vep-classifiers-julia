@@ -7,7 +7,7 @@ Random.seed!(0)
 function test_numerical_multiplication_accuracy(;
     t = Float32, tw = widen(t), n = 10000, m = 1000, k = 100000, seed = 0,
     err = (x, y) -> sqrt(sum(abs2.(x .- y)) / max(length(x), length(y))),
-    print = false, kw...)
+    print = true, kw...)
   isnothing(seed) || Random.seed!(seed)
   is = sort!(rand(1 : 1 + k - m, n))
   v = rand(t, k)
