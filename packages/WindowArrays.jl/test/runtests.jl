@@ -27,7 +27,7 @@ function test_numerical_multiplication_accuracy(;
     @info("Error of $(m)×$(n)-`Adjoint{$(WindowMatrix{t})}` times \
       $(n)-`$(Vector{t})` vs -`$(Vector{tw})`: $(errs[3])")
     @info("Error of $(m)×$(n)-`Adjoint{$(Matrix{t})}` times \
-      $(n)-`$(Vector{t})` vs -`$(Vector{tw})`: $(errs[4]")
+      $(n)-`$(Vector{t})` vs -`$(Vector{tw})`: $(errs[4])")
   end
   return errs[1] ≤ errs[2] && errs[3] ≤ errs[4]
   # NOTE: Running a Matrix multiplication `a * x` where `a` has not been widened
