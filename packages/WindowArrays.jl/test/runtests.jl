@@ -20,14 +20,14 @@ function test_numerical_multiplication_accuracy(;
   x1w = convert.(tw, x1); b1w = am' * x1w
   errs = (err(b0, b0w), err(b0m, b0w), err(b1, b1w), err(b1m, b1w))
   if print
-    println("Error of $(n)×$(m)-`$(WindowMatrix{t})` times \
+    @info("Error of $(n)×$(m)-`$(WindowMatrix{t})` times \
       $(m)-`$(Vector{t})` vs -`$(Vector{tw})`: $(errs[1])")
-    println("Error of $(n)×$(m)-`$(Matrix{t})` times \
-      $(m)-`$(Vector{t})` vs -`$(Vector{tw})`: $(errs[2])")
-    println("Error of $(m)×$(n)-`Adjoint{$(WindowMatrix{t})}` times \
-      $(n)-`$(Vector{t})` vs -`$(Vector{tw})`: $(errs[3])")
-    println("Error of $(m)×$(n)-`Adjoint{$(Matrix{t})}` times \
-      $(n)-`$(Vector{t})` vs -`$(Vector{tw})`: $(errs[4])")
+    @info("Error of $(n)×$(m)-`$(Matrix{t})` times \
+      $(m)-`$(Vector{t})` vs -`$(Vector{tw})`: $(errs[2])))
+    @info("Error of $(m)×$(n)-`Adjoint{$(WindowMatrix{t})}` times \
+      $(n)-`$(Vector{t})` vs -`$(Vector{tw})`: $(errs[3]"))
+    @info("Error of $(m)×$(n)-`Adjoint{$(Matrix{t})}` times \
+      $(n)-`$(Vector{t})` vs -`$(Vector{tw})`: $(errs[4)"))
   end
   return errs[1] ≤ errs[2] && errs[3] ≤ errs[4]
   # NOTE: Running a Matrix multiplication `a * x` where `a` has not been widened
@@ -38,7 +38,7 @@ end
 
 @testset "numerical multiplication accuracy" for
     t in (Float32, Float64, ComplexF32, ComplexF64)
-  test_numerical_multiplication_accuracy(; t)
+  @test test_numerical_multiplication_accuracy(; t)
 end
 
 # populate_fft_plan_cache(
