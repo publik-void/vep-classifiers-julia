@@ -831,9 +831,6 @@ end
 
 # `mul!` computes c <- a b α + c β
 
-# TODO: Re-profile performance in comparison to BLAS with only 1 thread, and
-# perhaps on lucille?
-
 @inline function LinearAlgebra.mul!(
     c::AbstractVector{<:Number},
     a::WindowMatrix{<:Number, <:Any, <:Any, <:WindowMatrixMulPreparation},
@@ -957,7 +954,7 @@ end
 @inline function LinearAlgebra.mul!(
     c::AbstractVector{<:Number}, a::Ad, b::AbstractVector{<:Number},
     α::Number, β::Number;
-    fanout::Real = 16, n_threads::Real = num_threads(),
+    fanout::Real = 8, n_threads::Real = num_threads(),
     threading_granularity_factor::Real = -.25) where {
       WM <: WindowMatrix{<:Number, <:Any, <:Any, <:Any, Nothing},
       Ad <: Union{<:Adjoint{<:Number, WM}, <:Transpose{<:Number, WM}}}
