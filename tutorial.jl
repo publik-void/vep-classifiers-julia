@@ -154,13 +154,10 @@ fw = FwSLT(
 # `true` in this case).
 
 # The `atol` and `btol` are stopping criteria for the optimization algorithm
-# used for the ridge regression . Using 64-bit floating point precision and the
-# tolerance value of `1e-6` has usually resulted in a good trade-off between
-# accuracy of the solution and runtime for me. It is a bit unfortunate, but I
-# would not recommend using 32-bit floats for the EEG signal / feature matrix.
-# As of writing this, there is still an open to-do item in `WindowArrays.jl` to
-# remind me to find out why 32-bit floats result in bad accuracy. It may have to
-# do with some summations being implemented in a numerically unfavorable way.
+# used for the ridge regression . Using an EEG signal / feature matrix in 64-bit
+# floating point precision and the tolerance value of `1e-6` has usually
+# resulted in a good trade-off between accuracy of the solution and runtime for
+# me. More on this further below.
 
 # To construct a feature matrix (`fw_a`) and a label vector (`fw_b`) from our
 # input data, we will use the `ab` method for the `FwSLT` type. This method
@@ -218,11 +215,27 @@ fw_a, fw_b = ab(fw, eeg, label_markers, samples_per_second)
 # above: `fw_a.mp` and `fw_a.mpa`, which hold the precomputed data for
 # multiplications of the form `fw_a * x` and `fw_a' * x`, respectively. Before
 # calling `mul_prepare`, those `fw_a.mp` and `fw_a.mpa` will both be `nothing`.
-# We will not call `mull_prepare` manualy here, because it will be done inside
+# We will not call `mul_prepare` manualy here, because it will be done inside
 # the `fit` method that we will invoke further below, but the call would look
 # something like this:
 #using WindowArrays: mul_prepare
 #fw_a = mul_prepare(fw_a)
+
+# Note that at the time of writing this, the `mpa` field won't be set by
+# `mul_prepare`, because the FFT-based multiplication code for the `fw_a' * x`
+# case produces erroneous results, currently. It's no big deal though, because
+# the non-FFT-based version is also efficient and precise. The `mp` field is the
+# important one.
+
+# As mentioned above, I usually used 64-bit floating point feature matrices. The
+# reason for this was that in the least-squares procedure, when using 32-bit,
+# the cumulative numeric error got too large for the algorithm to converge to a
+# good solution. After migrating the code to this repository, I have improved
+# the numerics of the multiplication functions for `WindowMatrix`. For the kind
+# of matrix sizes we're using here, the numerics are now even better than those
+# of the BLAS routines used for the standard `Matrix` types. So perhaps, by now,
+# a `WindowMatrix{Float32}` is sufficient to achieve good solutions. It may be
+# worth experimenting with that – I didn't have the time to test this myself.
 
 # The FFT-based multiplication makes use of the FFTW library. The FFTW library
 # is designed in such a way that an FFT algorithm must first be planned before
@@ -249,6 +262,13 @@ populate_fft_plan_cache(
 # instead of using inferior ad-hoc plans. When using this repository to run
 # large data analyses or online training, it makes sense to run
 # `populate_fft_plan_cache` once in the very beginning.
+
+# Lastly, in case there are any problems with the `WindowMatrix` type: The model
+# works just fine with the standard `Matrix` type as well. A `WindowMatrix` can
+# be converted to a `Matrix` like this:
+#fw_a = materialize(fw_a)
+# Note, however, that the "materialized" `Matrix` may have quite the memory
+# footprint.
 
 
 ## Training the model
@@ -434,6 +454,33 @@ sw_mls0_accuracy =
 # same, except that vectors/matrices of lightness values would be used instead
 # of segment bit values, and shifts would be done in integer multiples of the
 # segment length.
+
+
+### Multi-threading
+
+# In the use case of large cross-validated hyperparameter searches, it may make
+# sense to assign a single thread per model being trained. Conversely, in the
+# use case of training a single model in an online setting, any parallelization
+# would have to happen on a lower level. The LSMR least-squares algorithm used
+# by the models is single-threaded. I think it should be relatively simple to
+# substitute the `lsmr!` call in the code by a call to some multi-threaded
+# algorithm, if desired. (The algorithm would have to accept an `AbstractMatrix`
+# and not use it for much else than multiplying it or its transpose with
+# vectors.) However, parallelization at the level of the matrix multiplications
+# is also an option.
+
+# The second line of the below code gets the number of threads of the current
+# Julia process. If the `julia` command was run with the `--threads=auto`
+# argument, it should be equal to the total number of CPU threads. In the last
+# two lines, the number of threads is set for BLAS and `WindowArrays`. BLAS is
+# the library that performs the linear algebra operations for the standard
+# `Matrix` types. Setting these to 1 disables multi-threaded matrix
+# multiplications.
+import LinearAlgebra, Base.Threads, WindowArrays
+n_threads = Threads.nthreads()
+LinearAlgebra.BLAS.set_num_threads(n_threads)
+WindowArrays.num_threads(n_threads)
+
 
 # I hope this tutorial will be helpful.
 (; fw_accuracy, sw_accuracy, sw_mls0_accuracy)

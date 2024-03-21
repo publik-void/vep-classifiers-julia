@@ -84,7 +84,5 @@ intense bandpass-filtering or the usage of an analytical signal made the real
 difference here, though.
 
 ** To-do list
-- TODO: Change the remarks in ~tutorial.jl~ about the numerics and add some
-  brief notes about setting the number of threads
 - TODO: Look for any open to-do marks in the code that would be prudent to
   finish
