@@ -481,6 +481,37 @@ n_threads = Threads.nthreads()
 LinearAlgebra.BLAS.set_num_threads(n_threads)
 WindowArrays.num_threads(n_threads)
 
+# Both BLAS as well as `WindowArrays` may choose to use less than the
+# configured number of threads for a multiplication operation. On a machine
+# with a large number of CPU threads, performance can be gained by further
+# tweaking a `WindowMatrix` so that it will use more threads:
+x = rand(eltype(fw_a), size(fw_a, 2))
+@time fw_a * x;
+fw_a = mul_prepare(fw_a;
+  matvec_minimal_payload_size = size(fw_a, 2),
+  fanout = 16)
+@time fw_a * x;
+
+# The above code creates a random vector `x`, measures the time it takes for the
+# multiplication `fw_a * x`, creates a tweaked version of `fw_a`, and measures
+# the time again. Note that running each `@time` measurement multiple times may
+# be needed in order to avoid measuring the JIT-compilation time. The
+# `matvec_minimal_payload_size` keyword argument is `9 * size(fw_a, 2)` by
+# default.  Lowering it results in smaller, and thus more, FFT buffers being
+# used internally. The `fanout` specifies how many of these buffers should be
+# packaged into units that will each be handled by a single thread. Its default
+# value is 16. For both of these arguments, it is the case that lowering them
+# will generally result in better numerics and worse single-thread performance,
+# but more total threads. The actual number of threads that will be used can be
+# obtained as follows:
+WindowArrays.get_last_task_index(fw_a.mp.rt)
+
+# So the idea here is, for a given matrix size and element type, to measure the
+# runtime of a few different `mul_prepare`d multiplications as above. Then, when
+# good values for `matvec_minimal_payload_size` and `fanout` have been
+# determined, these keywords should actually be passed to the `fit` and `apply`
+# methods, instead of using `mul_prepare` directly.
+
 
 # I hope this tutorial will be helpful.
 (; fw_accuracy, sw_accuracy, sw_mls0_accuracy)

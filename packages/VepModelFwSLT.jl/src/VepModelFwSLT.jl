@@ -67,11 +67,11 @@ end
 
 "A wrapper for `mul_prepare` that handles non-`WindowMatrix` matrices and prints
 a notification in case no FFT plan was precomputed."
-_mul_prepare(a::AbstractMatrix{<:Number}) = a
-_mul_prepare(a::WindowMatrix{<:Number}) =
-  mul_prepare(a; gfpv_flags = gfpv_new_plan)
-_mul_prepare(a::BiasMatrix{<:Number}) =
-  BiasArray(_mul_prepare(a.parent), Val(false))
+_mul_prepare(a::AbstractMatrix{<:Number}; kw...) = a
+_mul_prepare(a::WindowMatrix{<:Number}; kw...) =
+  mul_prepare(a; gfpv_flags = gfpv_new_plan, kw...)
+_mul_prepare(a::BiasMatrix{<:Number}; kw...) =
+  BiasArray(_mul_prepare(a.parent; kw...), Val(false))
 
 """
     ab(model::FwSLT, signal, label_markers, sampling_rate, sentinel = nothing, \
@@ -122,8 +122,8 @@ function threshold_b(model::FwSLT, b::AbstractVector{<:Number})
 end
 
 """
-    fit(model::FwSLT, a, b, b_thresholded = threshold_b(model, b); \
-      allow_overwrite_a = true)
+    fit(model::FwSLT, a, b, b_thresholded = threshold_b(model, b) [,x]; \
+      allow_overwrite_a = true, init_scale = 2, init_offset = 0, kw...)
 
 Trains the `model` on the feature matrix `a` with label vector `b` and returns
 the resulting fit `(; std, x, t)`.
@@ -131,20 +131,30 @@ the resulting fit `(; std, x, t)`.
 If a thresholded version of `b` has already been computed, it can be passed as
 `b_thresholded`.
 
+An initial `x` can be supplied. Otherwise, it will be initialized with random
+numbers scaled and translated by `init_scale` and `init_offset`.
+
 Pass `allow_overwrite_a = false` if the data of `a` should remain unmodified.
+
+Further keyword arguments will be passed on to `WindowArrays.mul_prepare`.
 """
 function VepModels.fit(model::FwSLT, a::AbstractMatrix{<:Number},
     b::AbstractVector{<:Number},
-    b_thresholded::AbstractVector = threshold_b(model, b);
-    allow_overwrite_a::Bool = true, init_scale = 2, init_offset = 0)
-  a = _mul_prepare(a)
+    b_thresholded::AbstractVector = threshold_b(model, b),
+    x::Union{Nothing, AbstractVector{<:Number}} = nothing;
+    allow_overwrite_a::Bool = true,
+    init_scale::Number = 2, init_offset::Number = 0, kw...)
+  a = _mul_prepare(a, kw...)
 
   std = fit(AffStd, a, Val(model.std_mode))
   apply_std_arg = allow_overwrite_a ? () : (Val(true),)
   a = apply!(std, a, apply_std_arg...)
 
-  x = rand(eltype(a), size(a, 2))
-  x .= (x .- 1//2) .* (2 * init_scale) .+ init_scale
+  if isnothing(x)
+    x = rand(eltype(a), size(a, 2))
+    x .= (x .- 1//2) .* (2 * init_scale) .+ init_scale
+  end
+
   # tic = time()
   lsmr!(x, a, b; λ = model.λ, model.lsmr_kw...)
   # toc = time()
@@ -156,18 +166,20 @@ function VepModels.fit(model::FwSLT, a::AbstractMatrix{<:Number},
 end
 
 """
-    apply(model::FwSLT, a, fit; allow_overwrite_a = true)
+    apply(model::FwSLT, a, fit; allow_overwrite_a = true, kw...)
 
 Applies the `fit` (as returned by `fit(model, …)`) to the feature matrix `a` and
 returns the prediction vector.
 
 Pass `allow_overwrite_a = false` if the data of `a` should remain unmodified.
+
+Further keyword arguments will be passed on to `WindowArrays.mul_prepare`.
 """
 function VepModels.apply(model::FwSLT, a::AbstractMatrix{<:Number},
     fit::NamedTuple{(:std, :x, :t), <:Tuple{AffStd, AbstractVector{<:Number},
       Thresholding}};
-    allow_overwrite_a::Bool = true)
-  a = _mul_prepare(a)
+    allow_overwrite_a::Bool = true, kw...)
+  a = _mul_prepare(a; kw...)
   apply_std_arg = allow_overwrite_a ? () : (Val(true),)
   a = apply!(fit.std, a, apply_std_arg...)
   return apply(fit.t, a * fit.x, model.classes)
