@@ -83,6 +83,3 @@ slight decrease in classification accuracy. In hindsight, I am not sure if the
 intense bandpass-filtering or the usage of an analytical signal made the real
 difference here, though.
 
-** To-do list
-- TODO: Look for any open to-do marks in the code that would be prudent to
-  finish
