@@ -5,5 +5,4 @@ version = "0.0.1"
 [deps]
 DataProcessors = "f8caa8ff-213c-4aa4-b150-ce79372b6696"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
-Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 WindowArrays = "1d8a2e5d-deda-4d09-b1ee-690d1f550d6f"

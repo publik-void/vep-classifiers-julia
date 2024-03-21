@@ -1204,8 +1204,7 @@ function _sum(f, a::WindowMatrix{T}, dims, buf, ::Val{is_conj}
     f_is_id && is_conj && (buf .= conj.(buf))
     return buf
   elseif 1 ∈ dims
-    !f_is_id && (a = mul_prepare(broadcast(is_conj ? f_conj : f, a),
-                                 Val(false), Val(true)))
+    !f_is_id && (a = broadcast(is_conj ? f_conj : f, a))
     ta = f_is_id && is_conj ? a' : transpose(a)
     LinearAlgebra.mul!(view(buf, :), ta, ones(eltype(a), size(a, 1)))
     return buf

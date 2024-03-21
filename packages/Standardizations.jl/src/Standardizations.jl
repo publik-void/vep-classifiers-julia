@@ -3,7 +3,6 @@ module Standardizations
 
 using DataProcessors: DataProcessor, fit, apply, apply!, is_id
 using WindowArrays: WindowMatrix, BiasMatrix, BiasArray
-using Statistics: mean, std
 using LinearAlgebra: Adjoint, Transpose
 import DataProcessors
 import LinearAlgebra
@@ -66,7 +65,7 @@ _inv(x) = inv(x)
 function AffStdMatrix(a::AbstractMatrix{<:Number}, std::AffStd,
     ::Val{lazy} = default_use_lazy(std, a)) where {lazy}
   # TODO: Does this allocate more than necessary?
-  # TODO: Perhaps canonicalize this to always create vectors (`vec` may prduce
+  # TODO: Perhaps canonicalize this to always create vectors (`vec` may produce
   # something like a `reshape`), or would it be nicer not to do that?
   lazy || return apply(a, std, Val(false))
   has_m, has_s = !isnothing(std.m), !isnothing(std.s)
@@ -117,7 +116,6 @@ end
   has_s, has_m = !isnothing(a.parent.sr), !isnothing(a.parent.msr)
   !has_s && !has_m && return LinearAlgebra.mul!(c, a.parent.parent', b, α, β)
   # TODO: Other cases
-  # TODO: Profile and optimize this.
   has_s  && has_m  && return (c .= ((a.parent.parent' * b) .*
     conj.(a.parent.sr) .- conj.(a.parent.msr) .* sum(b)) .* α .+ c .* β;
                               return c)
@@ -174,7 +172,6 @@ end
     ::Val{lazy} = default_use_lazy(std, a)) where {lazy} =
   BiasArray(apply(std, a.parent, Val(lazy)), Val(false))
 
-# TODO: Confirm that `fit` runs efficiently on `WindowMatrix`.
 """
     fit(::Type{AffStd}, a, mode = Val(:identity), exclude = nothing)
 
@@ -198,13 +195,13 @@ function DataProcessors.fit(t::Type{<:AffStd}, a::AbstractMatrix{<:Number},
     # Nothing to be done
 
   elseif mode == :μ_absgeom
-    m = mean(a; dims = 1)
+    m = _mean(a, 1)
     thr = typeof(abs(a[1]))(1e-18)
-    s = exp.(mean(log.(max.(abs.(a .- m), thr)); dims = 1)) # TODO: Efficiency
+    s = exp.(_mean(log.(max.(abs.(a .- m), thr)), 1)) # TODO: Efficiency
 
   elseif mode == :μ_σ
-    m = mean(a; dims = 1)
-    s = std(a; dims = 1, mean = m)
+    m = _mean(a, 1)
+    s = _std(a, 1, m)
   else
     error("Unrecognized standardization fit mode `:$(mode)`.")
   end
@@ -214,6 +211,12 @@ function DataProcessors.fit(t::Type{<:AffStd}, a::AbstractMatrix{<:Number},
   end
   return t(m, s)
 end
+
+_mean(f, a::AbstractArray, dim::Int) =
+  sum(f, a; dims = dim) .* (one(eltype(a)) / size(a, dim))
+_mean(a::AbstractArray, dim::Int) = _mean(identity, a, dim)
+_std(a::AbstractArray, dim::Int, mean = _mean(a, dim)) = sqrt.(
+  (_mean(abs2, a, 1) .- abs2.(mean)) .* (size(a, dim) // (size(a, dim) - 1)))
 
 # Specialization for `BiasMatrix` does not fit bias term.
 DataProcessors.fit(t::Type{<:AffStd}, a::BiasMatrix{<:Number},
