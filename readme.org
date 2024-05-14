@@ -20,6 +20,9 @@ The main use case would be offline or online training, usage, and evaluation of
 CCVEP classifiers. However, the models could also be used e.g. for classifying
 SSVEPs.
 
+For more info on CCVEPs, see e.g. Schlör, /Eliciting Code-modulated Visual
+Evoked Potentials by Non-Recognizable Presentation of Code Sequences/.
+
 ** Overview of the repository structure and usage
 
 In Julia, a project with its dependencies is defined by a ~Project.toml~ file in
